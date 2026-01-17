@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: "3"
+tasks:
+  default:
+    cmds:
+      - task: build
+
+  build:
+    cmds:
+      - cargo build
+
+  link:
+    deps: [build]
+    dir: bin
+    cmds:
+      - ln -sf ../target/debug/mdlr .
