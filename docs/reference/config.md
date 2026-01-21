@@ -17,19 +17,6 @@ project/
 
 ## Configuration Options
 
-### Labels
-
-Customize the bucket labels displayed with metric values:
-
-```yaml
-labels:
-  excellent: "excellent"
-  good: "good"
-  fair: "fair"
-  poor: "poor"
-  critical: "critical"
-```
-
 ### Thresholds
 
 Configure thresholds for each metric. Values below a threshold receive that bucket label. Values at or above the `poor` threshold are labeled `critical`.
@@ -97,14 +84,6 @@ The default thresholds are based on empirical observations of healthy codebases:
 ## Example Configuration
 
 ```yaml
-# Customize labels for your team
-labels:
-  excellent: "ship it"
-  good: "acceptable"
-  fair: "needs work"
-  poor: "refactor"
-  critical: "urgent"
-
 # Stricter thresholds for a mature codebase
 thresholds:
   dag_density:

@@ -72,60 +72,6 @@ impl MetricThresholds {
     }
 }
 
-/// Custom labels for buckets
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BucketLabels {
-    #[serde(default = "default_excellent")]
-    pub excellent: String,
-    #[serde(default = "default_good")]
-    pub good: String,
-    #[serde(default = "default_fair")]
-    pub fair: String,
-    #[serde(default = "default_poor")]
-    pub poor: String,
-    #[serde(default = "default_critical")]
-    pub critical: String,
-}
-
-fn default_excellent() -> String {
-    "excellent".to_string()
-}
-fn default_good() -> String {
-    "good".to_string()
-}
-fn default_fair() -> String {
-    "fair".to_string()
-}
-fn default_poor() -> String {
-    "poor".to_string()
-}
-fn default_critical() -> String {
-    "critical".to_string()
-}
-
-impl Default for BucketLabels {
-    fn default() -> Self {
-        Self {
-            excellent: default_excellent(),
-            good: default_good(),
-            fair: default_fair(),
-            poor: default_poor(),
-            critical: default_critical(),
-        }
-    }
-}
-
-impl BucketLabels {
-    pub fn get(&self, bucket: Bucket) -> &str {
-        match bucket {
-            Bucket::Excellent => &self.excellent,
-            Bucket::Good => &self.good,
-            Bucket::Fair => &self.fair,
-            Bucket::Poor => &self.poor,
-            Bucket::Critical => &self.critical,
-        }
-    }
-}
 
 /// Display configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,24 +161,12 @@ impl Default for ThresholdsConfig {
 }
 
 /// Main configuration struct
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default)]
-    pub labels: BucketLabels,
     #[serde(default)]
     pub thresholds: ThresholdsConfig,
     #[serde(default)]
     pub display: DisplayConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            labels: BucketLabels::default(),
-            thresholds: ThresholdsConfig::default(),
-            display: DisplayConfig::default(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -262,15 +196,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.labels.excellent, "excellent");
         assert_eq!(config.display.mode, DisplayMode::Both);
         assert_eq!(config.thresholds.dag_density.excellent, 0.5);
-    }
-
-    #[test]
-    fn test_bucket_labels() {
-        let labels = BucketLabels::default();
-        assert_eq!(labels.get(Bucket::Excellent), "excellent");
-        assert_eq!(labels.get(Bucket::Critical), "critical");
     }
 }

@@ -66,8 +66,6 @@ impl BucketedMetrics {
 
 /// Formats a bucketed value according to display mode
 fn format_value(value: &BucketedValue, config: &Config, is_integer: bool) -> String {
-    let label = config.labels.get(value.bucket);
-
     match config.display.mode {
         DisplayMode::Value => {
             if is_integer {
@@ -76,12 +74,12 @@ fn format_value(value: &BucketedValue, config: &Config, is_integer: bool) -> Str
                 format!("{:.3}", value.value)
             }
         }
-        DisplayMode::Label => label.to_string(),
+        DisplayMode::Label => value.bucket.to_string(),
         DisplayMode::Both => {
             if is_integer {
-                format!("{} ({})", value.value as usize, label)
+                format!("{} ({})", value.value as usize, value.bucket)
             } else {
-                format!("{:.3} ({})", value.value, label)
+                format!("{:.3} ({})", value.value, value.bucket)
             }
         }
     }
@@ -227,14 +225,4 @@ mod tests {
         assert!(output.contains("Fan-In:  max=good, mean=excellent"));
     }
 
-    #[test]
-    fn test_custom_labels() {
-        let metrics = make_test_metrics();
-        let mut config = Config::default();
-        config.labels.excellent = "superb".to_string();
-        let display = MetricsDisplay::new(&metrics, &config);
-        let output = format!("{}", display);
-
-        assert!(output.contains("(superb)"));
-    }
 }

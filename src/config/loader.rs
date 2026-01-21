@@ -59,7 +59,7 @@ mod tests {
     fn test_load_default_when_no_config() {
         let temp = TempDir::new().unwrap();
         let config = load_from_dir(temp.path()).unwrap();
-        assert_eq!(config.labels.excellent, "excellent");
+        assert_eq!(config.thresholds.dag_density.excellent, 0.5);
     }
 
     #[test]
@@ -70,8 +70,6 @@ mod tests {
         fs::write(
             config_dir.join("config.yaml"),
             r#"
-labels:
-  excellent: "superb"
 thresholds:
   dag_density:
     excellent: 0.3
@@ -83,10 +81,9 @@ thresholds:
         .unwrap();
 
         let config = load_from_dir(temp.path()).unwrap();
-        assert_eq!(config.labels.excellent, "superb");
         assert_eq!(config.thresholds.dag_density.excellent, 0.3);
         // Defaults still work for unspecified fields
-        assert_eq!(config.labels.good, "good");
+        assert_eq!(config.thresholds.fan_in_max.excellent, 3.0);
     }
 
     #[test]
@@ -97,8 +94,12 @@ thresholds:
         fs::write(
             config_dir.join("config.yaml"),
             r#"
-labels:
-  excellent: "parent-config"
+thresholds:
+  dag_density:
+    excellent: 0.25
+    good: 0.5
+    fair: 0.75
+    poor: 1.0
 "#,
         )
         .unwrap();
@@ -107,7 +108,7 @@ labels:
         fs::create_dir_all(&child_dir).unwrap();
 
         let config = load_from_dir(&child_dir).unwrap();
-        assert_eq!(config.labels.excellent, "parent-config");
+        assert_eq!(config.thresholds.dag_density.excellent, 0.25);
     }
 
     #[test]
@@ -116,7 +117,7 @@ labels:
         let config_dir = temp.path().join(".mdlr");
         fs::create_dir(&config_dir).unwrap();
         let config_path = config_dir.join("config.yaml");
-        fs::write(&config_path, "labels: {}").unwrap();
+        fs::write(&config_path, "thresholds: {}").unwrap();
 
         let found = find_config_file(temp.path());
         assert!(found.is_some());
