@@ -41,6 +41,52 @@ impl CacheStore {
         })
     }
 
+    /// Find and open a cache store by searching up from the given directory.
+    /// Returns an error if no .mdlr directory is found.
+    pub fn find(start_dir: &Path) -> Result<Self> {
+        let start = start_dir
+            .canonicalize()
+            .unwrap_or_else(|_| start_dir.to_path_buf());
+        let mut current = start.as_path();
+
+        loop {
+            let mdlr_dir = current.join(CACHE_DIR_NAME);
+            if mdlr_dir.exists() && mdlr_dir.is_dir() {
+                return Self::open(current);
+            }
+
+            match current.parent() {
+                Some(parent) => current = parent,
+                None => anyhow::bail!(
+                    "No .mdlr directory found. Run 'mdlr check --save' to initialize."
+                ),
+            }
+        }
+    }
+
+    /// Find a cache store by searching up, or create one at the given directory if not found.
+    pub fn find_or_create(start_dir: &Path) -> Result<Self> {
+        let start = start_dir
+            .canonicalize()
+            .unwrap_or_else(|_| start_dir.to_path_buf());
+        let mut current = start.as_path();
+
+        loop {
+            let mdlr_dir = current.join(CACHE_DIR_NAME);
+            if mdlr_dir.exists() && mdlr_dir.is_dir() {
+                return Self::open(current);
+            }
+
+            match current.parent() {
+                Some(parent) => current = parent,
+                None => {
+                    // No existing .mdlr found, create at start_dir
+                    return Self::open(start_dir);
+                }
+            }
+        }
+    }
+
     /// Get the project root path.
     pub fn root(&self) -> &Path {
         &self.root

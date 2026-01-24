@@ -182,7 +182,7 @@ fn extract_calls(node: Node, source: &str) -> Vec<String> {
 fn collect_calls(node: Node, source: &str, calls: &mut Vec<String>) {
     if node.kind() == "call_expression" {
         if let Some(func) = node.child_by_field_name("function") {
-            let call_name = node_text(func, source);
+            let call_name = extract_callable_name(func, source);
             if !call_name.is_empty() {
                 calls.push(call_name);
             }
@@ -191,6 +191,43 @@ fn collect_calls(node: Node, source: &str, calls: &mut Vec<String>) {
 
     for child in node.children(&mut node.walk()) {
         collect_calls(child, source, calls);
+    }
+}
+
+/// Extract just the function/method name from a call's function node.
+/// Handles:
+/// - Simple calls: `foo()` -> "foo"
+/// - Path calls: `foo::bar()` -> "foo::bar"
+/// - Method calls: `obj.method()` -> "obj.method"
+/// - Chained calls: `foo().bar()` -> "bar" (the method being called)
+fn extract_callable_name(node: Node, source: &str) -> String {
+    match node.kind() {
+        "identifier" | "scoped_identifier" => node_text(node, source),
+        "field_expression" => {
+            // obj.method - extract object and field
+            let field = node
+                .child_by_field_name("field")
+                .map(|n| node_text(n, source))
+                .unwrap_or_default();
+
+            if let Some(value) = node.child_by_field_name("value") {
+                // If the value is a call_expression, just return the field name
+                // e.g., foo().bar() -> "bar"
+                if value.kind() == "call_expression" {
+                    return field;
+                }
+                // Otherwise build "value.field"
+                let value_name = extract_callable_name(value, source);
+                if value_name.is_empty() {
+                    field
+                } else {
+                    format!("{}.{}", value_name, field)
+                }
+            } else {
+                field
+            }
+        }
+        _ => String::new(),
     }
 }
 
@@ -291,5 +328,35 @@ mod inner {
 
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].id, "inner::nested");
+    }
+
+    #[test]
+    fn test_extract_method_chains() {
+        let extractor = RustExtractor::new().unwrap();
+        let source = r#"
+fn chained() {
+    obj.method();
+    foo().bar();
+    fs::write("path", "content").unwrap();
+    TempDir::new().unwrap();
+    some.long.chain().of().calls();
+}
+"#;
+        let units = extractor
+            .extract(source, &PathBuf::from("test.rs"))
+            .unwrap();
+
+        assert_eq!(units.len(), 1);
+        let calls = &units[0].calls;
+        assert!(calls.contains(&"obj.method".to_string()));
+        assert!(calls.contains(&"foo".to_string()));
+        assert!(calls.contains(&"bar".to_string()));
+        assert!(calls.contains(&"fs::write".to_string()));
+        assert!(calls.contains(&"unwrap".to_string()));
+        assert!(calls.contains(&"TempDir::new".to_string()));
+        assert!(calls.contains(&"of".to_string()));
+        assert!(calls.contains(&"calls".to_string()));
+        // Should NOT contain the full multi-line expression
+        assert!(!calls.iter().any(|c| c.contains("content")));
     }
 }

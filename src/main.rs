@@ -8,6 +8,7 @@ use mdlr::graph::{Edge, EdgeKind, Graph, Unit, UnitKind};
 use mdlr::metrics::{BucketedMetrics, MetricsDisplay, TagMetrics};
 use mdlr::walk::SourceWalker;
 use std::collections::HashSet;
+use std::env;
 use std::fs;
 use std::path::Path;
 
@@ -15,7 +16,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { path, save, format } => handle_check(&path, save, format),
+        Command::Check { path, save, format } => handle_check(path.as_deref(), save, format),
         Command::Ls { path, kind, format } => handle_ls(&path, kind, format),
         Command::Get { symbol, format } => handle_get(&symbol, format),
         Command::Tag {
@@ -29,10 +30,22 @@ fn main() -> Result<()> {
     }
 }
 
-fn handle_check(path: &Path, save: bool, format: OutputFormat) -> Result<()> {
-    let store = CacheStore::open(path)?;
+fn handle_check(filter_path: Option<&Path>, save: bool, format: OutputFormat) -> Result<()> {
+    let cwd = env::current_dir()?;
+    let store = CacheStore::find_or_create(&cwd)?;
     let config = config::load()?;
     let walker = SourceWalker::new(store.root());
+
+    // Canonicalize filter path for comparison
+    let filter_path = filter_path
+        .map(|p| {
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                cwd.join(p)
+            }
+        })
+        .map(|p| p.canonicalize().unwrap_or(p));
 
     let mut all_units: Vec<Unit> = Vec::new();
     let mut extracted_count = 0;
@@ -42,6 +55,20 @@ fn handle_check(path: &Path, save: bool, format: OutputFormat) -> Result<()> {
     let mut entries_to_save: Vec<FileCacheEntry> = Vec::new();
 
     for file_path in walker.walk() {
+        // Apply path filter if specified
+        if let Some(ref filter) = filter_path {
+            if filter.is_file() {
+                // Filter is a file: only include this exact file
+                if file_path != *filter {
+                    continue;
+                }
+            } else {
+                // Filter is a directory: only include files under it
+                if !file_path.starts_with(filter) {
+                    continue;
+                }
+            }
+        }
         let relative = file_path
             .strip_prefix(store.root())
             .unwrap_or(&file_path)

@@ -14,9 +14,8 @@ pub struct Cli {
 pub enum Command {
     /// Run analysis and display metrics
     Check {
-        /// Path to analyze (defaults to current directory)
-        #[arg(default_value = ".")]
-        path: PathBuf,
+        /// Path to constrain analysis to (file or directory). If not specified, analyzes the entire project.
+        path: Option<PathBuf>,
         /// Save extraction results to cache (by default, check is read-only)
         #[arg(long)]
         save: bool,
