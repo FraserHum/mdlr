@@ -15,6 +15,7 @@ A modularity analyzer for code. Uses tree-sitter to parse source files, builds a
 - [DAG Density](metrics/dag-density.md)
 - [Fan-In](metrics/fan-in.md)
 - [Fan-Out](metrics/fan-out.md)
+- [Tag Coverage](metrics/tag-coverage.md)
 - [Interpreting Results](metrics/interpreting-results.md)
 
 ### Reference

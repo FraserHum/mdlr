@@ -9,6 +9,7 @@ mdlr computes structural metrics that help you understand the modularity and cou
 | [DAG Density](dag-density.md) | How connected the dependency graph is relative to a minimal tree |
 | [Fan-In](fan-in.md) | How many units depend on each unit |
 | [Fan-Out](fan-out.md) | How many units each unit depends on |
+| [Tag Coverage](tag-coverage.md) | Percentage of units with semantic tags |
 
 ## How Metrics Are Computed
 

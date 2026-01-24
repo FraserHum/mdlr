@@ -1,11 +1,11 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Parser;
 use mdlr::cache::{get_file_metadata, now_timestamp, CacheStore, FileCacheEntry, ProjectIndex};
 use mdlr::cli::{Cli, Command, OutputFormat};
 use mdlr::config;
 use mdlr::extract::{extractor_for_path, Extractor};
-use mdlr::graph::{Edge, EdgeKind, Graph, Unit};
-use mdlr::metrics::{BucketedMetrics, MetricsDisplay};
+use mdlr::graph::{Edge, EdgeKind, Graph, Unit, UnitKind};
+use mdlr::metrics::{BucketedMetrics, MetricsDisplay, TagMetrics};
 use mdlr::walk::SourceWalker;
 use std::collections::HashSet;
 use std::fs;
@@ -18,6 +18,16 @@ fn main() -> Result<()> {
         Command::Todo { path, all, format } => handle_todo(&path, all, format),
         Command::Analyze { path, force, format } => handle_analyze(&path, force, format),
         Command::Export { path, format } => handle_export(&path, format),
+        Command::Ls { path, kind, format } => handle_ls(&path, kind, format),
+        Command::Get { symbol, format } => handle_get(&symbol, format),
+        Command::Tag {
+            symbol,
+            add,
+            remove,
+            clear,
+            list,
+            format,
+        } => handle_tag(symbol, add, remove, clear, list, format),
     }
 }
 
@@ -180,6 +190,8 @@ fn handle_analyze(path: &Path, force: bool, format: OutputFormat) -> Result<()> 
 
     let graph = build_graph(all_units);
     let metrics = mdlr::metrics::compute(&graph);
+    let semantic_tags = store.load_tags()?;
+    let tag_metrics = TagMetrics::compute(&graph, &semantic_tags);
 
     match format {
         OutputFormat::Text => {
@@ -197,9 +209,33 @@ fn handle_analyze(path: &Path, force: bool, format: OutputFormat) -> Result<()> 
             println!();
             let display = MetricsDisplay::new(&metrics, &config);
             print!("{}", display);
+
+            if tag_metrics.has_tags() {
+                println!();
+                print!("{}", tag_metrics);
+            }
         }
         OutputFormat::Json => {
             let bucketed = BucketedMetrics::from_metrics(&metrics, &config);
+
+            let namespace_distribution: serde_json::Map<String, serde_json::Value> = tag_metrics
+                .namespace_distribution
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+                .collect();
+
+            let namespace_values: serde_json::Map<String, serde_json::Value> = tag_metrics
+                .namespace_values
+                .iter()
+                .map(|(ns, values)| {
+                    let values_map: serde_json::Map<String, serde_json::Value> = values
+                        .iter()
+                        .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+                        .collect();
+                    (ns.clone(), serde_json::Value::Object(values_map))
+                })
+                .collect();
+
             let output = serde_json::json!({
                 "files": {
                     "extracted": extracted_count,
@@ -231,6 +267,13 @@ fn handle_analyze(path: &Path, force: bool, format: OutputFormat) -> Result<()> 
                             "value": bucketed.fan_out.mean.value,
                             "bucket": bucketed.fan_out.mean.bucket,
                         },
+                    },
+                    "tag_coverage": {
+                        "total_units": tag_metrics.total_units,
+                        "tagged_units": tag_metrics.tagged_units,
+                        "coverage": tag_metrics.tag_coverage,
+                        "by_namespace": namespace_distribution,
+                        "namespace_values": namespace_values,
                     }
                 }
             });
@@ -276,6 +319,275 @@ fn handle_export(path: &Path, format: OutputFormat) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn handle_ls(path: &Path, kind_filter: Option<String>, format: OutputFormat) -> Result<()> {
+    let store = CacheStore::open(path)?;
+    let walker = SourceWalker::new(store.root());
+    let semantic_tags = store.load_tags()?;
+
+    let kind_filter = kind_filter.map(|k| parse_unit_kind(&k)).transpose()?;
+
+    let mut all_units: Vec<(Unit, Vec<String>)> = Vec::new();
+
+    for file_path in walker.walk() {
+        if let Ok(Some(entry)) = store.load_entry(&file_path) {
+            for unit in entry.units {
+                if let Some(ref filter) = kind_filter {
+                    if &unit.kind != filter {
+                        continue;
+                    }
+                }
+                let tags = semantic_tags.get_tags(&unit.id).to_vec();
+                all_units.push((unit, tags));
+            }
+        }
+    }
+
+    match format {
+        OutputFormat::Text => {
+            if all_units.is_empty() {
+                println!("No symbols found. Run 'mdlr analyze' first.");
+                return Ok(());
+            }
+
+            println!("{:<40} {:<10} {:<30} {:>6}-{:<6} {}", "ID", "Kind", "File", "Start", "End", "Tags");
+            println!("{}", "-".repeat(120));
+            for (unit, tags) in &all_units {
+                let kind_str = format!("{:?}", unit.kind);
+                let file_str = unit.file.display().to_string();
+                let tags_str = if tags.is_empty() {
+                    String::new()
+                } else {
+                    tags.join(", ")
+                };
+                println!(
+                    "{:<40} {:<10} {:<30} {:>6}-{:<6} {}",
+                    truncate(&unit.id, 40),
+                    kind_str,
+                    truncate(&file_str, 30),
+                    unit.span.start_line,
+                    unit.span.end_line,
+                    tags_str
+                );
+            }
+            println!();
+            println!("Total: {} symbols", all_units.len());
+        }
+        OutputFormat::Json => {
+            let output: Vec<_> = all_units
+                .into_iter()
+                .map(|(unit, tags)| {
+                    serde_json::json!({
+                        "id": unit.id,
+                        "kind": format!("{:?}", unit.kind),
+                        "file": unit.file,
+                        "span": {
+                            "start_line": unit.span.start_line,
+                            "end_line": unit.span.end_line,
+                        },
+                        "tags": tags,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_get(symbol: &str, format: OutputFormat) -> Result<()> {
+    let store = CacheStore::open(Path::new("."))?;
+    let walker = SourceWalker::new(store.root());
+    let semantic_tags = store.load_tags()?;
+
+    // Find the unit
+    let mut found_unit: Option<Unit> = None;
+    for file_path in walker.walk() {
+        if let Ok(Some(entry)) = store.load_entry(&file_path) {
+            for unit in entry.units {
+                if unit.id == symbol {
+                    found_unit = Some(unit);
+                    break;
+                }
+            }
+        }
+        if found_unit.is_some() {
+            break;
+        }
+    }
+
+    let unit = match found_unit {
+        Some(u) => u,
+        None => bail!("Symbol '{}' not found. Run 'mdlr ls' to see available symbols.", symbol),
+    };
+
+    // Read the source file and extract the span
+    let source_path = store.root().join(&unit.file);
+    let source = fs::read_to_string(&source_path)?;
+    let lines: Vec<&str> = source.lines().collect();
+
+    let start_idx = unit.span.start_line.saturating_sub(1);
+    let end_idx = unit.span.end_line.min(lines.len());
+    let content: String = lines[start_idx..end_idx].join("\n");
+
+    let tags = semantic_tags.get_tags(&unit.id).to_vec();
+
+    match format {
+        OutputFormat::Text => {
+            println!("Symbol: {}", unit.id);
+            println!("Kind: {:?}", unit.kind);
+            println!("File: {}:{}-{}", unit.file.display(), unit.span.start_line, unit.span.end_line);
+            if !tags.is_empty() {
+                println!("Tags: {}", tags.join(", "));
+            }
+            println!();
+            println!("{}", content);
+        }
+        OutputFormat::Json => {
+            let output = serde_json::json!({
+                "id": unit.id,
+                "kind": format!("{:?}", unit.kind),
+                "file": unit.file,
+                "span": {
+                    "start_line": unit.span.start_line,
+                    "end_line": unit.span.end_line,
+                },
+                "tags": tags,
+                "content": content,
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_tag(
+    symbol: Option<String>,
+    add: Vec<String>,
+    remove: Option<String>,
+    clear: bool,
+    list: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    let store = CacheStore::open(Path::new("."))?;
+    let mut semantic_tags = store.load_tags()?;
+
+    // List all tags
+    if list {
+        match format {
+            OutputFormat::Text => {
+                if semantic_tags.tags.is_empty() {
+                    println!("No semantic tags defined.");
+                    return Ok(());
+                }
+                println!("{:<40} {}", "Symbol", "Tags");
+                println!("{}", "-".repeat(80));
+                let mut entries: Vec<_> = semantic_tags.tags.iter().collect();
+                entries.sort_by_key(|(k, _)| k.as_str());
+                for (unit_id, tags) in entries {
+                    println!("{:<40} {}", truncate(unit_id, 40), tags.join(", "));
+                }
+            }
+            OutputFormat::Json => {
+                println!("{}", serde_json::to_string_pretty(&semantic_tags.tags)?);
+            }
+        }
+        return Ok(());
+    }
+
+    // Require symbol for add/remove/clear operations
+    let symbol = match symbol {
+        Some(s) => s,
+        None => bail!("Symbol ID is required. Use 'mdlr tag --list' to see all tags, or specify a symbol."),
+    };
+
+    // Verify symbol exists
+    let walker = SourceWalker::new(store.root());
+    let mut symbol_exists = false;
+    for file_path in walker.walk() {
+        if let Ok(Some(entry)) = store.load_entry(&file_path) {
+            if entry.units.iter().any(|u| u.id == symbol) {
+                symbol_exists = true;
+                break;
+            }
+        }
+    }
+    if !symbol_exists {
+        bail!("Symbol '{}' not found. Run 'mdlr ls' to see available symbols.", symbol);
+    }
+
+    // Clear tags
+    if clear {
+        let removed = semantic_tags.clear_tags(&symbol);
+        store.save_tags(&semantic_tags)?;
+        if removed {
+            println!("Cleared all tags from '{}'", symbol);
+        } else {
+            println!("No tags to clear on '{}'", symbol);
+        }
+        return Ok(());
+    }
+
+    // Remove a tag
+    if let Some(ref tag) = remove {
+        let removed = semantic_tags.remove_tag(&symbol, tag);
+        store.save_tags(&semantic_tags)?;
+        if removed {
+            println!("Removed tag '{}' from '{}'", tag, symbol);
+        } else {
+            println!("Tag '{}' not found on '{}'", tag, symbol);
+        }
+        return Ok(());
+    }
+
+    // Add tags
+    if !add.is_empty() {
+        for tag in &add {
+            semantic_tags.add_tag(&symbol, tag)?;
+        }
+        store.save_tags(&semantic_tags)?;
+        println!("Added {} tag(s) to '{}'", add.len(), symbol);
+        return Ok(());
+    }
+
+    // Show current tags for symbol
+    let tags = semantic_tags.get_tags(&symbol);
+    match format {
+        OutputFormat::Text => {
+            if tags.is_empty() {
+                println!("No tags on '{}'", symbol);
+            } else {
+                println!("Tags on '{}': {}", symbol, tags.join(", "));
+            }
+        }
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&tags)?);
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_unit_kind(s: &str) -> Result<UnitKind> {
+    match s.to_lowercase().as_str() {
+        "function" | "fn" => Ok(UnitKind::Function),
+        "struct" => Ok(UnitKind::Struct),
+        "module" | "mod" => Ok(UnitKind::Module),
+        "trait" => Ok(UnitKind::Trait),
+        "impl" => Ok(UnitKind::Impl),
+        _ => bail!("Unknown unit kind '{}'. Valid kinds: function, struct, module, trait, impl", s),
+    }
+}
+
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len - 3])
+    }
 }
 
 fn build_graph(units: Vec<Unit>) -> Graph {

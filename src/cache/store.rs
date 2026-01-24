@@ -1,4 +1,4 @@
-use super::types::{FileCacheEntry, FileMetadata, ProjectIndex};
+use super::types::{FileCacheEntry, FileMetadata, ProjectIndex, SemanticTags};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,12 +7,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const CACHE_DIR_NAME: &str = ".mdlr";
 const CACHE_SUBDIR: &str = "cache";
 const INDEX_FILE: &str = "index.json";
+const TAGS_FILE: &str = "tags.json";
 
 /// Store for managing the .mdlr cache directory.
 pub struct CacheStore {
     root: PathBuf,
     cache_dir: PathBuf,
     index_path: PathBuf,
+    tags_path: PathBuf,
 }
 
 impl CacheStore {
@@ -22,6 +24,7 @@ impl CacheStore {
         let mdlr_dir = root.join(CACHE_DIR_NAME);
         let cache_dir = mdlr_dir.join(CACHE_SUBDIR);
         let index_path = mdlr_dir.join(INDEX_FILE);
+        let tags_path = mdlr_dir.join(TAGS_FILE);
 
         fs::create_dir_all(&cache_dir)
             .with_context(|| format!("Failed to create cache directory: {:?}", cache_dir))?;
@@ -30,6 +33,7 @@ impl CacheStore {
             root,
             cache_dir,
             index_path,
+            tags_path,
         })
     }
 
@@ -96,6 +100,27 @@ impl CacheStore {
         let content = serde_json::to_string_pretty(index)?;
         fs::write(&self.index_path, content)
             .with_context(|| format!("Failed to write index: {:?}", self.index_path))?;
+        Ok(())
+    }
+
+    /// Load semantic tags.
+    pub fn load_tags(&self) -> Result<SemanticTags> {
+        if !self.tags_path.exists() {
+            return Ok(SemanticTags::new());
+        }
+
+        let content = fs::read_to_string(&self.tags_path)
+            .with_context(|| format!("Failed to read tags: {:?}", self.tags_path))?;
+        let tags: SemanticTags = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse tags: {:?}", self.tags_path))?;
+        Ok(tags)
+    }
+
+    /// Save semantic tags.
+    pub fn save_tags(&self, tags: &SemanticTags) -> Result<()> {
+        let content = serde_json::to_string_pretty(tags)?;
+        fs::write(&self.tags_path, content)
+            .with_context(|| format!("Failed to write tags: {:?}", self.tags_path))?;
         Ok(())
     }
 
