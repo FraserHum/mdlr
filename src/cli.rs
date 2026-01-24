@@ -19,12 +19,20 @@ pub enum Command {
         /// Save extraction results to cache (by default, check is read-only)
         #[arg(long)]
         save: bool,
+        /// Max opportunities to show per metric (-1 for all)
+        #[arg(short, default_value = "3", allow_hyphen_values = true)]
+        k: i32,
+        /// Pretty print as aligned table
+        #[arg(long)]
+        pretty: bool,
         /// Output format
         #[arg(long, default_value = "text")]
         format: OutputFormat,
     },
     /// List supported metrics with descriptions
     Metrics,
+    /// Output a markdown prompt for agent consumption
+    Prompt,
     /// List symbols (units) in a file or directory
     Ls {
         /// Path to list symbols from (defaults to current directory)

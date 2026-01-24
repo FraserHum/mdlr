@@ -1,11 +1,12 @@
 use anyhow::{bail, Result};
 use clap::Parser;
+use std::io::Write;
 use mdlr::cache::{get_file_metadata, now_timestamp, CacheStore, FileCacheEntry};
 use mdlr::cli::{Cli, Command, OutputFormat};
 use mdlr::config;
 use mdlr::extract::{extractor_for_path, Extractor};
 use mdlr::graph::{Edge, EdgeKind, Graph, Unit, UnitKind};
-use mdlr::metrics::{BucketedMetrics, ComplexityMetrics, ImplMetrics, MetricsDisplay, TagMetrics};
+use mdlr::metrics::{BucketedMetrics, ComplexityMetrics, ImplMetrics, TagMetrics};
 use mdlr::walk::SourceWalker;
 use std::collections::HashSet;
 use std::env;
@@ -16,8 +17,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { path, save, format } => handle_check(path.as_deref(), save, format),
+        Command::Check { path, save, k, pretty, format } => handle_check(path.as_deref(), save, k, pretty, format),
         Command::Metrics => handle_metrics(),
+        Command::Prompt => handle_prompt(),
         Command::Ls { path, kind, format } => handle_ls(&path, kind, format),
         Command::Get { symbol, format } => handle_get(&symbol, format),
         Command::Tag {
@@ -57,7 +59,12 @@ fn handle_metrics() -> Result<()> {
     Ok(())
 }
 
-fn handle_check(filter_path: Option<&Path>, save: bool, format: OutputFormat) -> Result<()> {
+fn handle_prompt() -> Result<()> {
+    print!("{}", include_str!("prompt.md"));
+    Ok(())
+}
+
+fn handle_check(filter_path: Option<&Path>, save: bool, k: i32, pretty: bool, format: OutputFormat) -> Result<()> {
     let cwd = env::current_dir()?;
     let store = CacheStore::find_or_create(&cwd)?;
     let config = config::load()?;
@@ -187,37 +194,100 @@ fn handle_check(filter_path: Option<&Path>, save: bool, format: OutputFormat) ->
 
     match format {
         OutputFormat::Text => {
-            println!(
-                "Files: {} extracted, {} cached",
-                extracted_count, cached_count
-            );
-            println!(
-                "Graph: {} units, {} edges",
-                graph.units.len(),
-                graph.edges.len()
-            );
-            println!();
-            let display = MetricsDisplay::new(&metrics, &config);
-            print!("{}", display);
+            let take = |n: usize| if k < 0 { n } else { k as usize };
 
-            if complexity.has_functions() {
-                println!();
-                print!("{}", complexity);
+            // Collect all rows: (metric, symbol, value)
+            let mut rows: Vec<(String, String, String)> = Vec::new();
+
+            // Fan-out opportunities
+            for (name, count) in metrics.fan_out.distribution.iter().take(take(metrics.fan_out.distribution.len())) {
+                if *count > 0 {
+                    rows.push(("fan_out".to_string(), name.clone(), count.to_string()));
+                }
             }
 
-            if impl_metrics.has_impls() {
-                println!();
-                print!("{}", impl_metrics);
+            // Fan-in opportunities
+            for (name, count) in metrics.fan_in.distribution.iter().take(take(metrics.fan_in.distribution.len())) {
+                if *count > 0 {
+                    rows.push(("fan_in".to_string(), name.clone(), count.to_string()));
+                }
             }
 
-            if tag_metrics.has_tags() {
-                println!();
-                print!("{}", tag_metrics);
+            // Function size opportunities
+            for (name, size) in complexity.size.distribution.iter().take(take(complexity.size.distribution.len())) {
+                if *size > 1 {
+                    rows.push(("function_size".to_string(), name.clone(), size.to_string()));
+                }
+            }
+
+            // Parameter count opportunities
+            for (name, params) in complexity.params.distribution.iter().take(take(complexity.params.distribution.len())) {
+                if *params > 0 {
+                    rows.push(("params".to_string(), name.clone(), params.to_string()));
+                }
+            }
+
+            // Cyclomatic complexity opportunities
+            for (name, cc) in complexity.cyclomatic.distribution.iter().take(take(complexity.cyclomatic.distribution.len())) {
+                if *cc > 1 {
+                    rows.push(("cyclomatic".to_string(), name.clone(), cc.to_string()));
+                }
+            }
+
+            // Methods per impl opportunities
+            for (name, count) in impl_metrics.methods_per_impl.distribution.iter().take(take(impl_metrics.methods_per_impl.distribution.len())) {
+                if *count > 0 {
+                    rows.push(("methods_per_impl".to_string(), name.clone(), count.to_string()));
+                }
+            }
+
+            // Traits per type opportunities
+            for (name, count) in impl_metrics.traits_per_type.distribution.iter().take(take(impl_metrics.traits_per_type.distribution.len())) {
+                if *count > 0 {
+                    rows.push(("traits_per_type".to_string(), name.clone(), count.to_string()));
+                }
+            }
+
+            // LCOM opportunities
+            for (name, lcom) in impl_metrics.lcom.distribution.iter().take(take(impl_metrics.lcom.distribution.len())) {
+                if *lcom > 0.0 {
+                    rows.push(("lcom".to_string(), name.clone(), format!("{:.2}", lcom)));
+                }
+            }
+
+            // Conceptual metrics (if tags exist)
+            if let Some(ref conceptual) = tag_metrics.conceptual {
+                for (name, count) in conceptual.conceptual_fan_out.top.iter().take(take(conceptual.conceptual_fan_out.top.len())) {
+                    if *count > 1 {
+                        rows.push(("conceptual_fan_out".to_string(), name.clone(), count.to_string()));
+                    }
+                }
+
+                for scatter in conceptual.concept_scattering.iter().take(take(conceptual.concept_scattering.len())) {
+                    if scatter.file_count > 1 {
+                        rows.push(("concept_scattering".to_string(), scatter.tag.clone(), format!("{:.2}", scatter.scatter_ratio)));
+                    }
+                }
+            }
+
+            // Print output
+            if pretty {
+                let mut tw = tabwriter::TabWriter::new(vec![]);
+                writeln!(tw, "metric\tsymbol\tvalue")?;
+                for (metric, symbol, value) in &rows {
+                    writeln!(tw, "{}\t{}\t{}", metric, symbol, value)?;
+                }
+                tw.flush()?;
+                print!("{}", String::from_utf8_lossy(&tw.into_inner()?));
+            } else {
+                println!("metric\tsymbol\tvalue");
+                for (metric, symbol, value) in &rows {
+                    println!("{}\t{}\t{}", metric, symbol, value);
+                }
             }
 
             if has_staged {
-                println!();
-                println!("(staged tag changes pending - use --save to commit)");
+                eprintln!("(staged tag changes pending - use --save to commit)");
             }
         }
         OutputFormat::Json => {
