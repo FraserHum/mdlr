@@ -51,8 +51,11 @@ src/
 1. Add computation to `src/metrics/structural.rs` or create new file
 2. Export from `src/metrics/mod.rs`
 3. Wire into `handle_analyze` in `src/main.rs`
-4. Create `docs/metrics/<metric-name>.md`
-5. Update `docs/metrics/overview.md` and `docs/README.md`
+4. **Add to the metrics list in `handle_metrics()` in `src/main.rs`** with a description explaining what high/low values indicate
+5. Create `docs/metrics/<metric-name>.md`
+6. Update `docs/metrics/overview.md` and `docs/README.md`
+
+**Important**: If a metric's meaning or interpretation changes, update its description in `handle_metrics()` accordingly.
 
 ### New Language
 

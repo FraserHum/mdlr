@@ -17,6 +17,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Check { path, save, format } => handle_check(path.as_deref(), save, format),
+        Command::Metrics => handle_metrics(),
         Command::Ls { path, kind, format } => handle_ls(&path, kind, format),
         Command::Get { symbol, format } => handle_get(&symbol, format),
         Command::Tag {
@@ -28,6 +29,32 @@ fn main() -> Result<()> {
             format,
         } => handle_tag(symbol, add, remove, clear, list, format),
     }
+}
+
+fn handle_metrics() -> Result<()> {
+    let metrics = [
+        ("dag_density", "Ratio of edges to nodes in the dependency graph. High values indicate tightly coupled code; low values suggest isolated components."),
+        ("fan_in", "Number of incoming dependencies to a unit. High values indicate core/shared code; very high may signal a bottleneck."),
+        ("fan_out", "Number of outgoing dependencies from a unit. High values indicate a unit with many responsibilities that may need refactoring."),
+        ("function_size", "Function size in lines of code. High values suggest functions that are hard to understand and test."),
+        ("params", "Number of parameters on a function. High values (>4) often indicate a function doing too much or needing a parameter object."),
+        ("cyclomatic", "Cyclomatic complexity (branches + 1) of a function. High values indicate complex control flow that is harder to test and maintain."),
+        ("methods_per_impl", "Number of methods in an impl block. High values may indicate a type with too many responsibilities."),
+        ("traits_per_type", "Number of traits implemented by a type. High values may indicate a versatile type or one trying to do too much."),
+        ("lcom", "Lack of Cohesion of Methods. High values indicate methods don't share state, suggesting the impl could be split."),
+        ("tag_coverage", "Percentage of units with semantic tags applied. Low values indicate incomplete conceptual mapping of the codebase."),
+        ("conceptual_fan_out", "Number of distinct semantic concepts a unit participates in. High values indicate mixed responsibilities across domains."),
+        ("concept_scattering", "How spread out a concept is across files. High values indicate poor cohesion; the concept should be consolidated."),
+        ("cross_concept_ratio", "Percentage of edges crossing concept boundaries. High values indicate tight coupling between different domains."),
+    ];
+
+    for (name, description) in metrics {
+        println!("{}", name);
+        println!("  {}", description);
+        println!();
+    }
+
+    Ok(())
 }
 
 fn handle_check(filter_path: Option<&Path>, save: bool, format: OutputFormat) -> Result<()> {

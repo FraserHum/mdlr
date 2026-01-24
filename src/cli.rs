@@ -23,6 +23,8 @@ pub enum Command {
         #[arg(long, default_value = "text")]
         format: OutputFormat,
     },
+    /// List supported metrics with descriptions
+    Metrics,
     /// List symbols (units) in a file or directory
     Ls {
         /// Path to list symbols from (defaults to current directory)
