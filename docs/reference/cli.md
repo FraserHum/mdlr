@@ -14,18 +14,22 @@
 Run analysis and display metrics.
 
 ```bash
-mdlr check [path] [--save] [--format <format>]
+mdlr check [target] [--save] [-k <count>] [--pretty] [--format <format>]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `path` | `.` | Directory to analyze |
+| `target` | `.` | Path (file/directory) or symbol ID to analyze |
 | `--save` | false | Save extraction results to cache |
+| `-k` | `3` | Max opportunities to show per metric (-1 for all) |
+| `--pretty` | false | Pretty print as aligned table |
 | `--format` | `text` | Output format: `text` or `json` |
 
 By default, `check` is **read-only** and does not modify the cache. This makes it idempotent - running it twice produces the same output. Use `--save` to:
 - Persist extraction results to cache
 - Commit any staged tag changes
+
+When a filter is specified (path or symbol), `--save` only saves entries matching that filter.
 
 **Examples:**
 
@@ -37,7 +41,22 @@ mdlr check
 mdlr check --save
 
 # Analyze specific directory
-mdlr check ./my-project
+mdlr check ./src/metrics
+
+# Analyze specific file
+mdlr check ./src/main.rs
+
+# Analyze a specific symbol
+mdlr check handle_check
+
+# Analyze an impl block
+mdlr check "impl CacheStore"
+
+# Show all opportunities (not just top 3)
+mdlr check -k -1
+
+# Pretty-printed table output
+mdlr check --pretty
 
 # JSON output for scripting
 mdlr check --format json

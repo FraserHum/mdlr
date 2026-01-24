@@ -17,7 +17,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { path, save, k, pretty, format } => handle_check(path.as_deref(), save, k, pretty, format),
+        Command::Check { target, save, k, pretty, format } => handle_check(target.as_deref(), save, k, pretty, format),
         Command::Metrics => handle_metrics(),
         Command::Prompt => handle_prompt(),
         Command::Ls { path, kind, format } => handle_ls(&path, kind, format),
@@ -64,22 +64,47 @@ fn handle_prompt() -> Result<()> {
     Ok(())
 }
 
-fn handle_check(filter_path: Option<&Path>, save: bool, k: i32, pretty: bool, format: OutputFormat) -> Result<()> {
+/// Represents what type of filter was specified
+enum CheckFilter {
+    /// No filter - analyze entire project
+    None,
+    /// Filter by file path
+    File(std::path::PathBuf),
+    /// Filter by directory path
+    Directory(std::path::PathBuf),
+    /// Filter by symbol ID
+    Symbol(String),
+}
+
+fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: OutputFormat) -> Result<()> {
     let cwd = env::current_dir()?;
     let store = CacheStore::find_or_create(&cwd)?;
     let config = config::load()?;
     let walker = SourceWalker::new(store.root());
 
-    // Canonicalize filter path for comparison
-    let filter_path = filter_path
-        .map(|p| {
-            if p.is_absolute() {
-                p.to_path_buf()
+    // Determine what kind of filter we have
+    let filter = if let Some(target_str) = target {
+        let target_path = if Path::new(target_str).is_absolute() {
+            Path::new(target_str).to_path_buf()
+        } else {
+            cwd.join(target_str)
+        };
+
+        if target_path.exists() {
+            // It's a path
+            let canonical = target_path.canonicalize().unwrap_or(target_path);
+            if canonical.is_file() {
+                CheckFilter::File(canonical)
             } else {
-                cwd.join(p)
+                CheckFilter::Directory(canonical)
             }
-        })
-        .map(|p| p.canonicalize().unwrap_or(p));
+        } else {
+            // Treat as symbol ID
+            CheckFilter::Symbol(target_str.to_string())
+        }
+    } else {
+        CheckFilter::None
+    };
 
     let mut all_units: Vec<Unit> = Vec::new();
     let mut extracted_count = 0;
@@ -88,21 +113,27 @@ fn handle_check(filter_path: Option<&Path>, save: bool, k: i32, pretty: bool, fo
     // Track entries to save if --save is used
     let mut entries_to_save: Vec<FileCacheEntry> = Vec::new();
 
+    // Track files that contain matching symbols (for symbol filter + save)
+    let mut files_with_matching_symbols: HashSet<std::path::PathBuf> = HashSet::new();
+
     for file_path in walker.walk() {
-        // Apply path filter if specified
-        if let Some(ref filter) = filter_path {
-            if filter.is_file() {
-                // Filter is a file: only include this exact file
-                if file_path != *filter {
-                    continue;
-                }
-            } else {
-                // Filter is a directory: only include files under it
-                if !file_path.starts_with(filter) {
+        // Apply path filter if specified (skip symbol filter for now, applied later)
+        match &filter {
+            CheckFilter::File(filter_path) => {
+                if file_path != *filter_path {
                     continue;
                 }
             }
+            CheckFilter::Directory(filter_path) => {
+                if !file_path.starts_with(filter_path) {
+                    continue;
+                }
+            }
+            CheckFilter::Symbol(_) | CheckFilter::None => {
+                // No path filtering needed
+            }
         }
+
         let relative = file_path
             .strip_prefix(store.root())
             .unwrap_or(&file_path)
@@ -122,16 +153,17 @@ fn handle_check(filter_path: Option<&Path>, save: bool, k: i32, pretty: bool, fo
                 if let Some(extractor) = extractor_for_path(&file_path) {
                     match extract_file(&file_path, extractor.as_ref()) {
                         Ok(units) => {
+                            extracted_count += 1;
+                            // Defer save decision until we know if file matches symbol filter
                             if save {
                                 entries_to_save.push(FileCacheEntry {
-                                    source_path: relative,
+                                    source_path: relative.clone(),
                                     mtime: current_meta.mtime,
                                     size: current_meta.size,
                                     units: units.clone(),
                                     cached_at: now_timestamp(),
                                 });
                             }
-                            extracted_count += 1;
                             units
                         }
                         Err(e) => {
@@ -149,16 +181,17 @@ fn handle_check(filter_path: Option<&Path>, save: bool, k: i32, pretty: bool, fo
                 let current_meta = get_file_metadata(&file_path)?;
                 match extract_file(&file_path, extractor.as_ref()) {
                     Ok(units) => {
+                        extracted_count += 1;
+                        // Defer save decision until we know if file matches symbol filter
                         if save {
                             entries_to_save.push(FileCacheEntry {
-                                source_path: relative,
+                                source_path: relative.clone(),
                                 mtime: current_meta.mtime,
                                 size: current_meta.size,
                                 units: units.clone(),
                                 cached_at: now_timestamp(),
                             });
                         }
-                        extracted_count += 1;
                         units
                     }
                     Err(e) => {
@@ -171,13 +204,43 @@ fn handle_check(filter_path: Option<&Path>, save: bool, k: i32, pretty: bool, fo
             }
         };
 
+        // For symbol filter, check if any unit matches and track the file
+        if let CheckFilter::Symbol(ref symbol_id) = filter {
+            let has_match = units.iter().any(|u| u.id == *symbol_id);
+            if has_match {
+                files_with_matching_symbols.insert(relative.clone());
+            }
+        }
+
         all_units.extend(units);
     }
 
+    // Apply symbol filter to units
+    if let CheckFilter::Symbol(ref symbol_id) = filter {
+        all_units.retain(|u| u.id == *symbol_id);
+        if all_units.is_empty() {
+            bail!("Symbol '{}' not found. Run 'mdlr ls' to see available symbols.", symbol_id);
+        }
+    }
+
     // Save entries and commit staged tags if --save flag was provided
+    // Only save entries that match the filter
     if save {
-        for entry in entries_to_save {
-            store.save_entry(&entry)?;
+        match &filter {
+            CheckFilter::Symbol(_) => {
+                // Only save files that contain matching symbols
+                for entry in entries_to_save {
+                    if files_with_matching_symbols.contains(&entry.source_path) {
+                        store.save_entry(&entry)?;
+                    }
+                }
+            }
+            _ => {
+                // Save all entries (already filtered by path)
+                for entry in entries_to_save {
+                    store.save_entry(&entry)?;
+                }
+            }
         }
         // Commit any staged tag changes
         store.commit_staged_tags()?;

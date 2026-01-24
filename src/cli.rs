@@ -14,8 +14,8 @@ pub struct Cli {
 pub enum Command {
     /// Run analysis and display metrics
     Check {
-        /// Path to constrain analysis to (file or directory). If not specified, analyzes the entire project.
-        path: Option<PathBuf>,
+        /// Path or symbol to constrain analysis to. Can be a file, directory, or symbol ID (e.g., 'handle_check', 'impl CacheStore').
+        target: Option<String>,
         /// Save extraction results to cache (by default, check is read-only)
         #[arg(long)]
         save: bool,

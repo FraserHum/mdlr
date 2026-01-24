@@ -70,3 +70,10 @@ src/
 1. Add to `src/cli.rs` enums
 2. Add handler in `src/main.rs`
 3. Update `docs/reference/cli.md`
+4. Update `src/prompt.md` if the command affects the typical workflow
+
+### Updating Functionality
+
+When changing CLI behavior, flags, or workflow:
+
+- Update `src/prompt.md` to reflect the changes (this is the agent-facing prompt output by `mdlr prompt`)

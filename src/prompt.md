@@ -6,6 +6,14 @@
 # Analyze codebase and show top opportunities per metric
 mdlr check
 
+# Analyze specific directory or file
+mdlr check src/metrics
+mdlr check src/main.rs
+
+# Analyze a specific symbol (function, impl, struct, etc.)
+mdlr check handle_check
+mdlr check "impl CacheStore"
+
 # Show more results per metric
 mdlr check -k 10
 
@@ -20,8 +28,9 @@ mdlr metrics
 
 1. Run `mdlr check` to identify modularity issues
 2. Focus on high-value opportunities (top of each metric)
-3. Refactor to reduce complexity, coupling, and improve cohesion
-4. Re-run `mdlr check` to verify improvements
+3. Drill down with `mdlr check <symbol>` to get metrics for a specific unit
+4. Refactor to reduce complexity, coupling, and improve cohesion
+5. Run `mdlr check --save` to cache results once satisfied
 
 ## Key Metrics
 
