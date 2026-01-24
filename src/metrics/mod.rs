@@ -4,4 +4,4 @@ pub mod tags;
 
 pub use display::{BucketedMetrics, BucketedValue, MetricsDisplay};
 pub use structural::{compute, FanMetrics, StructuralMetrics};
-pub use tags::TagMetrics;
+pub use tags::{ConceptScatter, ConceptualMetrics, CrossConceptEdges, FanDistribution, TagMetrics};

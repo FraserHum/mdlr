@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clap::Parser;
-use mdlr::cache::{get_file_metadata, now_timestamp, CacheStore, FileCacheEntry, ProjectIndex};
+use mdlr::cache::{get_file_metadata, now_timestamp, CacheStore, FileCacheEntry};
 use mdlr::cli::{Cli, Command, OutputFormat};
 use mdlr::config;
 use mdlr::extract::{extractor_for_path, Extractor};
@@ -15,9 +15,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Todo { path, all, format } => handle_todo(&path, all, format),
-        Command::Analyze { path, force, format } => handle_analyze(&path, force, format),
-        Command::Export { path, format } => handle_export(&path, format),
+        Command::Check { path, save, format } => handle_check(&path, save, format),
         Command::Ls { path, kind, format } => handle_ls(&path, kind, format),
         Command::Get { symbol, format } => handle_get(&symbol, format),
         Command::Tag {
@@ -31,136 +29,74 @@ fn main() -> Result<()> {
     }
 }
 
-fn handle_todo(path: &Path, all: bool, format: OutputFormat) -> Result<()> {
-    let store = CacheStore::open(path)?;
-    let index = store.load_index()?;
-    let walker = SourceWalker::new(store.root());
-
-    let mut new_files = Vec::new();
-    let mut changed_files = Vec::new();
-    let mut untagged_files = Vec::new();
-
-    for file_path in walker.walk() {
-        let relative = file_path
-            .strip_prefix(store.root())
-            .unwrap_or(&file_path)
-            .to_path_buf();
-
-        let current_meta = get_file_metadata(&file_path)?;
-
-        match index.files.get(&relative) {
-            None => {
-                new_files.push(relative);
-            }
-            Some(cached_meta) => {
-                if cached_meta.mtime != current_meta.mtime || cached_meta.size != current_meta.size
-                {
-                    changed_files.push(relative);
-                } else if all {
-                    if let Ok(Some(entry)) = store.load_entry(&file_path) {
-                        if entry.units.iter().any(|u| u.tags.is_empty()) {
-                            untagged_files.push(relative);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    match format {
-        OutputFormat::Text => {
-            let has_work = !new_files.is_empty() || !changed_files.is_empty();
-            let has_untagged = !untagged_files.is_empty();
-
-            if !has_work && !has_untagged {
-                println!("All files are up to date.");
-                return Ok(());
-            }
-
-            if !new_files.is_empty() {
-                println!("New files ({}):", new_files.len());
-                for f in &new_files {
-                    println!("  {}", f.display());
-                }
-                println!();
-            }
-
-            if !changed_files.is_empty() {
-                println!("Changed files ({}):", changed_files.len());
-                for f in &changed_files {
-                    println!("  {}", f.display());
-                }
-                println!();
-            }
-
-            if all && !untagged_files.is_empty() {
-                println!("Files with untagged units ({}):", untagged_files.len());
-                for f in &untagged_files {
-                    println!("  {}", f.display());
-                }
-                println!();
-            }
-
-            let total = new_files.len() + changed_files.len();
-            if total > 0 {
-                println!("Run 'mdlr analyze' to update {} file(s).", total);
-            }
-        }
-        OutputFormat::Json => {
-            let output = serde_json::json!({
-                "new": new_files,
-                "changed": changed_files,
-                "untagged": if all { untagged_files } else { vec![] },
-            });
-            println!("{}", serde_json::to_string_pretty(&output)?);
-        }
-    }
-
-    Ok(())
-}
-
-fn handle_analyze(path: &Path, force: bool, format: OutputFormat) -> Result<()> {
+fn handle_check(path: &Path, save: bool, format: OutputFormat) -> Result<()> {
     let store = CacheStore::open(path)?;
     let config = config::load()?;
     let walker = SourceWalker::new(store.root());
-
-    let mut index = if force {
-        ProjectIndex::default()
-    } else {
-        store.load_index()?
-    };
 
     let mut all_units: Vec<Unit> = Vec::new();
     let mut extracted_count = 0;
     let mut cached_count = 0;
 
+    // Track entries to save if --save is used
+    let mut entries_to_save: Vec<FileCacheEntry> = Vec::new();
+
     for file_path in walker.walk() {
         let relative = file_path
             .strip_prefix(store.root())
             .unwrap_or(&file_path)
             .to_path_buf();
 
-        let current_meta = get_file_metadata(&file_path)?;
-        let is_stale = force
-            || index
-                .files
-                .get(&relative)
-                .map(|m| m.mtime != current_meta.mtime || m.size != current_meta.size)
-                .unwrap_or(true);
+        // Try to load from cache first
+        let cached_entry = store.load_entry(&file_path)?;
 
-        let units = if is_stale {
+        let units = if let Some(entry) = cached_entry {
+            // Check if cache is still valid
+            let current_meta = get_file_metadata(&file_path)?;
+            if entry.mtime == current_meta.mtime && entry.size == current_meta.size {
+                cached_count += 1;
+                entry.units
+            } else {
+                // Cache is stale, re-extract
+                if let Some(extractor) = extractor_for_path(&file_path) {
+                    match extract_file(&file_path, extractor.as_ref()) {
+                        Ok(units) => {
+                            if save {
+                                entries_to_save.push(FileCacheEntry {
+                                    source_path: relative,
+                                    mtime: current_meta.mtime,
+                                    size: current_meta.size,
+                                    units: units.clone(),
+                                    cached_at: now_timestamp(),
+                                });
+                            }
+                            extracted_count += 1;
+                            units
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Failed to extract {}: {}", file_path.display(), e);
+                            continue;
+                        }
+                    }
+                } else {
+                    continue;
+                }
+            }
+        } else {
+            // No cache entry, extract fresh
             if let Some(extractor) = extractor_for_path(&file_path) {
+                let current_meta = get_file_metadata(&file_path)?;
                 match extract_file(&file_path, extractor.as_ref()) {
                     Ok(units) => {
-                        let entry = FileCacheEntry {
-                            source_path: relative.clone(),
-                            mtime: current_meta.mtime,
-                            size: current_meta.size,
-                            units: units.clone(),
-                            cached_at: now_timestamp(),
-                        };
-                        store.save_entry(&entry)?;
-                        index.files.insert(relative, current_meta);
+                        if save {
+                            entries_to_save.push(FileCacheEntry {
+                                source_path: relative,
+                                mtime: current_meta.mtime,
+                                size: current_meta.size,
+                                units: units.clone(),
+                                cached_at: now_timestamp(),
+                            });
+                        }
                         extracted_count += 1;
                         units
                     }
@@ -172,33 +108,31 @@ fn handle_analyze(path: &Path, force: bool, format: OutputFormat) -> Result<()> 
             } else {
                 continue;
             }
-        } else {
-            match store.load_entry(&file_path)? {
-                Some(entry) => {
-                    cached_count += 1;
-                    entry.units
-                }
-                None => continue,
-            }
         };
 
         all_units.extend(units);
     }
 
-    index.last_scan = now_timestamp();
-    store.save_index(&index)?;
+    // Save entries and commit staged tags if --save flag was provided
+    if save {
+        for entry in entries_to_save {
+            store.save_entry(&entry)?;
+        }
+        // Commit any staged tag changes
+        store.commit_staged_tags()?;
+    }
 
     let graph = build_graph(all_units);
     let metrics = mdlr::metrics::compute(&graph);
-    let semantic_tags = store.load_tags()?;
+    // Load tags with staged changes overlaid
+    let semantic_tags = store.load_tags_with_staged()?;
+    let has_staged = store.has_staged_tags();
     let tag_metrics = TagMetrics::compute(&graph, &semantic_tags);
 
     match format {
         OutputFormat::Text => {
-            println!("Analysis complete");
-            println!();
             println!(
-                "Files: {} extracted, {} from cache",
+                "Files: {} extracted, {} cached",
                 extracted_count, cached_count
             );
             println!(
@@ -213,6 +147,11 @@ fn handle_analyze(path: &Path, force: bool, format: OutputFormat) -> Result<()> 
             if tag_metrics.has_tags() {
                 println!();
                 print!("{}", tag_metrics);
+            }
+
+            if has_staged {
+                println!();
+                println!("(staged tag changes pending - use --save to commit)");
             }
         }
         OutputFormat::Json => {
@@ -235,6 +174,58 @@ fn handle_analyze(path: &Path, force: bool, format: OutputFormat) -> Result<()> 
                     (ns.clone(), serde_json::Value::Object(values_map))
                 })
                 .collect();
+
+            // Build conceptual metrics JSON if present
+            let conceptual_json = tag_metrics.conceptual.as_ref().map(|c| {
+                let scattering: Vec<_> = c
+                    .concept_scattering
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "tag": s.tag,
+                            "unit_count": s.unit_count,
+                            "file_count": s.file_count,
+                            "scatter_ratio": s.scatter_ratio,
+                        })
+                    })
+                    .collect();
+
+                let cross_concept_by_ns: serde_json::Map<String, serde_json::Value> = c
+                    .cross_concept_edges
+                    .by_namespace
+                    .iter()
+                    .map(|(ns, pairs)| {
+                        let pairs_json: Vec<_> = pairs
+                            .iter()
+                            .map(|(from, to, count)| {
+                                serde_json::json!({
+                                    "from": from,
+                                    "to": to,
+                                    "count": count,
+                                })
+                            })
+                            .collect();
+                        (ns.clone(), serde_json::json!(pairs_json))
+                    })
+                    .collect();
+
+                serde_json::json!({
+                    "conceptual_fan_out": {
+                        "max": c.conceptual_fan_out.max,
+                        "mean": c.conceptual_fan_out.mean,
+                        "top": c.conceptual_fan_out.top.iter().map(|(id, count)| {
+                            serde_json::json!({"id": id, "count": count})
+                        }).collect::<Vec<_>>(),
+                    },
+                    "concept_scattering": scattering,
+                    "cross_concept_edges": {
+                        "total_tagged_edges": c.cross_concept_edges.total_tagged_edges,
+                        "cross_concept_count": c.cross_concept_edges.cross_concept_count,
+                        "cross_concept_ratio": c.cross_concept_edges.cross_concept_ratio,
+                        "by_namespace": cross_concept_by_ns,
+                    },
+                })
+            });
 
             let output = serde_json::json!({
                 "files": {
@@ -268,12 +259,13 @@ fn handle_analyze(path: &Path, force: bool, format: OutputFormat) -> Result<()> 
                             "bucket": bucketed.fan_out.mean.bucket,
                         },
                     },
-                    "tag_coverage": {
+                    "semantic_tags": {
                         "total_units": tag_metrics.total_units,
                         "tagged_units": tag_metrics.tagged_units,
                         "coverage": tag_metrics.tag_coverage,
                         "by_namespace": namespace_distribution,
                         "namespace_values": namespace_values,
+                        "conceptual": conceptual_json,
                     }
                 }
             });
@@ -284,47 +276,10 @@ fn handle_analyze(path: &Path, force: bool, format: OutputFormat) -> Result<()> 
     Ok(())
 }
 
-fn handle_export(path: &Path, format: OutputFormat) -> Result<()> {
-    let store = CacheStore::open(path)?;
-    let walker = SourceWalker::new(store.root());
-
-    let mut all_units: Vec<Unit> = Vec::new();
-
-    for file_path in walker.walk() {
-        if let Ok(Some(entry)) = store.load_entry(&file_path) {
-            all_units.extend(entry.units);
-        }
-    }
-
-    let graph = build_graph(all_units);
-
-    match format {
-        OutputFormat::Json => {
-            let json = mdlr::graph::serialize::to_json(&graph)?;
-            println!("{}", json);
-        }
-        OutputFormat::Text => {
-            println!("Graph");
-            println!();
-            println!("Units ({}):", graph.units.len());
-            for unit in &graph.units {
-                println!("  {} ({:?}) - {:?}", unit.id, unit.kind, unit.file);
-            }
-            println!();
-            println!("Edges ({}):", graph.edges.len());
-            for edge in &graph.edges {
-                println!("  {} -> {} ({:?})", edge.from, edge.to, edge.kind);
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn handle_ls(path: &Path, kind_filter: Option<String>, format: OutputFormat) -> Result<()> {
     let store = CacheStore::open(path)?;
     let walker = SourceWalker::new(store.root());
-    let semantic_tags = store.load_tags()?;
+    let semantic_tags = store.load_tags_with_staged()?;
 
     let kind_filter = kind_filter.map(|k| parse_unit_kind(&k)).transpose()?;
 
@@ -347,7 +302,7 @@ fn handle_ls(path: &Path, kind_filter: Option<String>, format: OutputFormat) -> 
     match format {
         OutputFormat::Text => {
             if all_units.is_empty() {
-                println!("No symbols found. Run 'mdlr analyze' first.");
+                println!("No symbols found. Run 'mdlr check --save' first.");
                 return Ok(());
             }
 
@@ -400,7 +355,7 @@ fn handle_ls(path: &Path, kind_filter: Option<String>, format: OutputFormat) -> 
 fn handle_get(symbol: &str, format: OutputFormat) -> Result<()> {
     let store = CacheStore::open(Path::new("."))?;
     let walker = SourceWalker::new(store.root());
-    let semantic_tags = store.load_tags()?;
+    let semantic_tags = store.load_tags_with_staged()?;
 
     // Find the unit
     let mut found_unit: Option<Unit> = None;
@@ -473,10 +428,12 @@ fn handle_tag(
     format: OutputFormat,
 ) -> Result<()> {
     let store = CacheStore::open(Path::new("."))?;
-    let mut semantic_tags = store.load_tags()?;
 
-    // List all tags
+    // List all tags (with staged changes overlaid)
     if list {
+        let semantic_tags = store.load_tags_with_staged()?;
+        let has_staged = store.has_staged_tags();
+
         match format {
             OutputFormat::Text => {
                 if semantic_tags.tags.is_empty() {
@@ -489,6 +446,10 @@ fn handle_tag(
                 entries.sort_by_key(|(k, _)| k.as_str());
                 for (unit_id, tags) in entries {
                     println!("{:<40} {}", truncate(unit_id, 40), tags.join(", "));
+                }
+                if has_staged {
+                    println!();
+                    println!("(staged changes pending - use 'mdlr check --save' to commit)");
                 }
             }
             OutputFormat::Json => {
@@ -519,41 +480,37 @@ fn handle_tag(
         bail!("Symbol '{}' not found. Run 'mdlr ls' to see available symbols.", symbol);
     }
 
+    // Load staged tags for modifications
+    let mut staged = store.load_staged_tags()?;
+
     // Clear tags
     if clear {
-        let removed = semantic_tags.clear_tags(&symbol);
-        store.save_tags(&semantic_tags)?;
-        if removed {
-            println!("Cleared all tags from '{}'", symbol);
-        } else {
-            println!("No tags to clear on '{}'", symbol);
-        }
+        staged.stage_clear(&symbol);
+        store.save_staged_tags(&staged)?;
+        println!("Staged: clear all tags from '{}' (use 'mdlr check --save' to commit)", symbol);
         return Ok(());
     }
 
     // Remove a tag
     if let Some(ref tag) = remove {
-        let removed = semantic_tags.remove_tag(&symbol, tag);
-        store.save_tags(&semantic_tags)?;
-        if removed {
-            println!("Removed tag '{}' from '{}'", tag, symbol);
-        } else {
-            println!("Tag '{}' not found on '{}'", tag, symbol);
-        }
+        staged.stage_remove(&symbol, tag);
+        store.save_staged_tags(&staged)?;
+        println!("Staged: remove tag '{}' from '{}' (use 'mdlr check --save' to commit)", tag, symbol);
         return Ok(());
     }
 
     // Add tags
     if !add.is_empty() {
         for tag in &add {
-            semantic_tags.add_tag(&symbol, tag)?;
+            staged.stage_add(&symbol, tag)?;
         }
-        store.save_tags(&semantic_tags)?;
-        println!("Added {} tag(s) to '{}'", add.len(), symbol);
+        store.save_staged_tags(&staged)?;
+        println!("Staged: add {} tag(s) to '{}' (use 'mdlr check --save' to commit)", add.len(), symbol);
         return Ok(());
     }
 
-    // Show current tags for symbol
+    // Show current tags for symbol (with staged changes)
+    let semantic_tags = store.load_tags_with_staged()?;
     let tags = semantic_tags.get_tags(&symbol);
     match format {
         OutputFormat::Text => {

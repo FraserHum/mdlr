@@ -9,94 +9,38 @@
 
 ## Commands
 
-### todo
+### check
 
-Show files that need analysis.
-
-```bash
-mdlr todo [path] [--all] [--format <format>]
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `path` | `.` | Directory to check |
-| `--all` | false | Also show files with untagged units |
-| `--format` | `text` | Output format: `text` or `json` |
-
-**Examples:**
+Run analysis and display metrics.
 
 ```bash
-# Check current directory
-mdlr todo
-
-# Check specific directory
-mdlr todo ./src
-
-# Include files with untagged units
-mdlr todo --all
-
-# JSON output for scripting
-mdlr todo --format json
-```
-
----
-
-### analyze
-
-Run analysis on a directory and display metrics.
-
-```bash
-mdlr analyze [path] [--force] [--format <format>]
+mdlr check [path] [--save] [--format <format>]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `path` | `.` | Directory to analyze |
-| `--force` | false | Force re-analysis of all files |
+| `--save` | false | Save extraction results to cache |
 | `--format` | `text` | Output format: `text` or `json` |
 
+By default, `check` is **read-only** and does not modify the cache. This makes it idempotent - running it twice produces the same output. Use `--save` to:
+- Persist extraction results to cache
+- Commit any staged tag changes
+
 **Examples:**
 
 ```bash
-# Analyze current directory (incremental)
-mdlr analyze
+# Analyze current directory (read-only)
+mdlr check
+
+# Analyze and save results to cache
+mdlr check --save
 
 # Analyze specific directory
-mdlr analyze ./my-project
-
-# Force full re-analysis
-mdlr analyze --force
+mdlr check ./my-project
 
 # JSON output for scripting
-mdlr analyze --format json
-```
-
----
-
-### export
-
-Export the graph from cached analysis.
-
-```bash
-mdlr export [path] [--format <format>]
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `path` | `.` | Directory to export from |
-| `--format` | `json` | Output format: `text` or `json` |
-
-**Examples:**
-
-```bash
-# Export as JSON
-mdlr export > graph.json
-
-# Export specific directory
-mdlr export ./my-project --format json
-
-# Human-readable list
-mdlr export --format text
+mdlr check --format json
 ```
 
 ---
@@ -225,7 +169,28 @@ mdlr tag --list
 mdlr tag --list --format json
 ```
 
-**Notes:**
+**Staging Workflow:**
 
-- Tags are stored in `.mdlr/tags.json` and persist across re-extraction
-- Tag coverage metrics are shown in `mdlr analyze` output when tags exist
+Tag changes are **staged** rather than immediately committed. This allows you to review changes before persisting them:
+
+1. `mdlr tag <symbol> --add <tag>` stages the addition
+2. `mdlr check` shows metrics with staged changes overlaid
+3. `mdlr check --save` commits staged changes to the main tags file
+
+```bash
+# Stage some tag changes
+mdlr tag compute --add domain:metrics
+mdlr tag handle_request --add layer:api
+
+# Review with check (shows staged changes)
+mdlr check
+
+# Commit when satisfied
+mdlr check --save
+```
+
+**Storage:**
+
+- Main tags: `.mdlr/tags.json`
+- Staged changes: `.mdlr/tags.staged.json` (deleted after commit)
+- Tags persist across re-extraction

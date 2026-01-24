@@ -1,14 +1,14 @@
-# Tag Coverage
+# Tag Coverage & Conceptual Metrics
+
+Semantic tags enable conceptual analysis of your codebase, measuring not just what code does structurally, but what business domains and architectural layers it belongs to.
+
+## Tag Coverage
 
 Tag coverage measures what percentage of code units have user-defined semantic tags.
-
-## Definition
 
 ```
 Tag Coverage = (Units with at least one tag) / (Total units)
 ```
-
-## Interpretation
 
 | Coverage | Description |
 |----------|-------------|
@@ -18,26 +18,99 @@ Tag Coverage = (Units with at least one tag) / (Total units)
 | > 75% | High coverage - mature tagging practice |
 | 100% | Full coverage |
 
-## Namespace Distribution
+## Conceptual Metrics
 
-In addition to overall coverage, mdlr reports a breakdown by namespace:
+When tags exist, mdlr computes additional metrics to identify architectural issues:
+
+### Conceptual Fan-Out
+
+Measures how many concepts (tags) each unit touches. High conceptual fan-out indicates a function might be doing too much.
 
 ```
+Conceptual Fan-Out (tags per unit):
+  max=3, mean=1.5
+
+  Potential conceptual overload:
+    process_order (3 concepts)
+    handle_request (2 concepts)
+```
+
+**Interpretation:**
+- **1 concept**: Focused, single-responsibility
+- **2 concepts**: May be a coordinator or boundary function
+- **3+ concepts**: Likely doing too much, consider refactoring
+
+### Concept Scattering
+
+Measures how spread out each concept is across files. High scatter indicates a concept is not cohesive.
+
+```
+Concept Scattering (high = spread across files):
+  domain:auth - 12 units across 8 files (ratio: 0.67)
+  domain:billing - 5 units across 1 file (ratio: 0.20)
+```
+
+**Interpretation:**
+- **Ratio near 0**: Highly cohesive (many units in few files)
+- **Ratio near 1**: Highly scattered (each unit in its own file)
+- **Ratio > 0.5**: Consider consolidating related code
+
+### Cross-Concept Coupling
+
+Measures edges (calls) that cross between different concepts within the same namespace.
+
+```
+Cross-Concept Coupling:
+  5/20 edges cross concept boundaries (25.0%)
+
+  domain:
+    auth <-> billing (3 edges)
+    auth <-> user (2 edges)
+```
+
+**Interpretation:**
+- **Low ratio (< 20%)**: Clean domain boundaries
+- **High ratio (> 50%)**: Concepts are tightly coupled
+- **Specific pairs**: Shows which concepts interact most
+
+## Example Analysis
+
+```
+Semantic Tags
+=============
+
+Coverage: 45.0% (90/200 units tagged)
+
 By Namespace:
-  domain: 45 units
-    domain:auth (12)
-    domain:billing (18)
-    domain:core (15)
-  layer: 30 units
-    layer:api (10)
-    layer:service (15)
-    layer:data (5)
+  domain: 85 units
+    domain:auth (30)
+    domain:billing (25)
+    domain:core (30)
+  layer: 60 units
+    layer:api (20)
+    layer:service (25)
+    layer:data (15)
+
+Conceptual Fan-Out (tags per unit):
+  max=3, mean=1.2
+
+  Potential conceptual overload:
+    handle_checkout (3 concepts)
+
+Concept Scattering (high = spread across files):
+  domain:auth - 30 units across 15 files (ratio: 0.50)
+
+Cross-Concept Coupling:
+  12/50 edges cross concept boundaries (24.0%)
+
+  domain:
+    auth <-> billing (5 edges)
 ```
 
-This helps you understand:
-- Which namespaces are most used
-- How tags are distributed within each namespace
-- Where tagging effort is concentrated
+This analysis reveals:
+1. `handle_checkout` touches 3 domains - consider splitting
+2. Auth code is scattered across 15 files - consider consolidating
+3. Auth and billing are coupled via 5 edges - may need an abstraction layer
 
 ## Use Cases
 
@@ -82,4 +155,4 @@ Tags are stored in `.mdlr/tags.json` and persist independently from extracted un
 
 - `mdlr tag --list` - View all tags
 - `mdlr ls` - See tags alongside symbols
-- `mdlr analyze` - View tag coverage metrics
+- `mdlr analyze` - View tag coverage and conceptual metrics
