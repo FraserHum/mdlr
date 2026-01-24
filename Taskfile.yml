@@ -7,11 +7,18 @@ tasks:
       - task: build
 
   build:
+    vars:
+      MODE: '{{.MODE | default "debug"}}'
     cmds:
-      - cargo build
+      - cargo build {{if eq .MODE "release"}}--release{{end}}
 
   link:
     deps: [build]
     dir: bin
     cmds:
       - ln -sf ../target/debug/mdlr .
+
+  install:
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - cargo install --root $HOME/.local
