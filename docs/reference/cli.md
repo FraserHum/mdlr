@@ -19,7 +19,7 @@ mdlr check [target] [--save] [-k <count>] [--pretty] [--format <format>]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `target` | `.` | Path (file/directory) or symbol ID to analyze |
+| `target` | `.` | Path (file/directory) or fully qualified symbol ID to analyze |
 | `--save` | false | Save extraction results to cache |
 | `-k` | `3` | Max opportunities to show per metric (-1 for all) |
 | `--pretty` | false | Pretty print as aligned table |
@@ -46,11 +46,14 @@ mdlr check ./src/metrics
 # Analyze specific file
 mdlr check ./src/main.rs
 
-# Analyze a specific symbol
-mdlr check handle_check
+# Analyze a specific function
+mdlr check "src/main.rs::handle_check"
+
+# Analyze a method in an impl block
+mdlr check "src/cache/store.rs::impl CacheStore::load_entry"
 
 # Analyze an impl block
-mdlr check "impl CacheStore"
+mdlr check "src/cache/store.rs::impl CacheStore"
 
 # Show all opportunities (not just top 3)
 mdlr check -k -1

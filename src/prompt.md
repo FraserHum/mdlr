@@ -11,8 +11,8 @@ mdlr check src/metrics
 mdlr check src/main.rs
 
 # Analyze a specific symbol (function, impl, struct, etc.)
-mdlr check handle_check
-mdlr check "impl CacheStore"
+mdlr check "src/main.rs::handle_check"
+mdlr check "src/cache/store.rs::impl CacheStore"
 
 # Show more results per metric
 mdlr check -k 10

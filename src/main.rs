@@ -8,7 +8,7 @@ use mdlr::extract::{extractor_for_path, Extractor};
 use mdlr::graph::{Edge, EdgeKind, Graph, Unit, UnitKind};
 use mdlr::metrics::{BucketedMetrics, ComplexityMetrics, ImplMetrics, TagMetrics};
 use mdlr::walk::SourceWalker;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -151,7 +151,7 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
             } else {
                 // Cache is stale, re-extract
                 if let Some(extractor) = extractor_for_path(&file_path) {
-                    match extract_file(&file_path, extractor.as_ref()) {
+                    match extract_file(&file_path, &relative, extractor.as_ref()) {
                         Ok(units) => {
                             extracted_count += 1;
                             // Defer save decision until we know if file matches symbol filter
@@ -179,7 +179,7 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
             // No cache entry, extract fresh
             if let Some(extractor) = extractor_for_path(&file_path) {
                 let current_meta = get_file_metadata(&file_path)?;
-                match extract_file(&file_path, extractor.as_ref()) {
+                match extract_file(&file_path, &relative, extractor.as_ref()) {
                     Ok(units) => {
                         extracted_count += 1;
                         // Defer save decision until we know if file matches symbol filter
@@ -779,16 +779,78 @@ fn truncate(s: &str, max_len: usize) -> String {
 
 fn build_graph(units: Vec<Unit>) -> Graph {
     let mut graph = Graph::new();
+
+    // Build multiple resolution indexes for call matching
+    // 1. Exact match: full ID -> full ID
+    // 2. Short name: "function_name" -> full ID (may have conflicts)
+    // 3. With impl: "impl Foo::method" -> full ID
+    // 4. Module path: "module::function" -> full ID
+
     let unit_ids: HashSet<_> = units.iter().map(|u| u.id.clone()).collect();
 
+    // Map from various name forms to full IDs
+    // We store Vec<String> to handle ambiguous names (multiple functions with same short name)
+    let mut name_to_ids: HashMap<String, Vec<String>> = HashMap::new();
+
     for unit in &units {
+        // Add the full ID (for exact matches)
+        name_to_ids
+            .entry(unit.id.clone())
+            .or_default()
+            .push(unit.id.clone());
+
+        // Extract the local part (after the file path)
+        // e.g., "src/main.rs::handle_check" -> "handle_check"
+        // e.g., "src/main.rs::impl Foo::new" -> "impl Foo::new"
+        if let Some(idx) = unit.id.find("::") {
+            let local = &unit.id[idx + 2..];
+
+            // Add local name
+            name_to_ids
+                .entry(local.to_string())
+                .or_default()
+                .push(unit.id.clone());
+
+            // For methods in impl blocks, also index by just the method name
+            // e.g., "impl Foo::new" -> also index as "new" and "Foo::new"
+            if local.starts_with("impl ") {
+                // "impl Foo::method" -> extract "method" and "Foo::method"
+                if let Some(method_idx) = local.rfind("::") {
+                    let method_name = &local[method_idx + 2..];
+                    name_to_ids
+                        .entry(method_name.to_string())
+                        .or_default()
+                        .push(unit.id.clone());
+
+                    // Also add "Type::method" form (without "impl ")
+                    // "impl Foo::method" -> "Foo::method"
+                    let type_and_method = &local[5..]; // Skip "impl "
+                    name_to_ids
+                        .entry(type_and_method.to_string())
+                        .or_default()
+                        .push(unit.id.clone());
+                }
+            }
+        }
+    }
+
+    // Resolve calls and create edges
+    for unit in &units {
+        let caller_file = unit.file.to_string_lossy();
+
         for call in &unit.calls {
-            if unit_ids.contains(call) {
-                graph.add_edge(Edge {
-                    from: unit.id.clone(),
-                    to: call.clone(),
-                    kind: EdgeKind::Calls,
-                });
+            // Try to resolve the call to a full ID
+            let resolved = resolve_call(call, &caller_file, &unit_ids, &name_to_ids);
+
+            if let Some(target_id) = resolved {
+                // Don't create self-loops
+                if target_id != unit.id {
+                    graph.add_edge(Edge {
+                        from: unit.id.clone(),
+                        to: target_id,
+                        kind: EdgeKind::Calls,
+                    });
+                }
             }
         }
     }
@@ -800,7 +862,82 @@ fn build_graph(units: Vec<Unit>) -> Graph {
     graph
 }
 
-fn extract_file(path: &Path, extractor: &dyn Extractor) -> Result<Vec<Unit>> {
-    let source = fs::read_to_string(path)?;
-    extractor.extract(&source, path)
+/// Resolve a call expression to a fully qualified unit ID
+fn resolve_call(
+    call: &str,
+    caller_file: &str,
+    unit_ids: &HashSet<String>,
+    name_to_ids: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    // 1. Try exact match first (for fully qualified calls)
+    if unit_ids.contains(call) {
+        return Some(call.to_string());
+    }
+
+    // 2. Try prefixing with caller's file path (same-file calls)
+    let same_file_id = format!("{}::{}", caller_file, call);
+    if unit_ids.contains(&same_file_id) {
+        return Some(same_file_id);
+    }
+
+    // 3. Look up in name index
+    if let Some(candidates) = name_to_ids.get(call) {
+        // If only one match, use it
+        if candidates.len() == 1 {
+            return Some(candidates[0].clone());
+        }
+
+        // Multiple matches - prefer same file
+        for candidate in candidates {
+            if candidate.starts_with(caller_file) {
+                return Some(candidate.clone());
+            }
+        }
+
+        // If still ambiguous, take the first one (arbitrary but deterministic)
+        // In practice, if there are multiple `new()` functions, we can't know
+        // which one is being called without type information
+        return Some(candidates[0].clone());
+    }
+
+    // 4. Handle method calls like "self.field" or "obj.method"
+    // These typically won't resolve to our units since we don't track
+    // what type "obj" is, but we try anyway
+    if call.contains('.') {
+        // Try just the method name
+        if let Some(method) = call.rsplit('.').next() {
+            if let Some(candidates) = name_to_ids.get(method) {
+                if candidates.len() == 1 {
+                    return Some(candidates[0].clone());
+                }
+                // Ambiguous method call - prefer same file
+                for candidate in candidates {
+                    if candidate.starts_with(caller_file) {
+                        return Some(candidate.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Handle path-style calls like "module::function" or "Type::method"
+    if call.contains("::") {
+        // Already tried exact match and name index lookup above
+        // Try removing the first component (crate/module name)
+        if let Some(idx) = call.find("::") {
+            let without_prefix = &call[idx + 2..];
+            if let Some(candidates) = name_to_ids.get(without_prefix) {
+                if candidates.len() == 1 {
+                    return Some(candidates[0].clone());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_file(abs_path: &Path, rel_path: &Path, extractor: &dyn Extractor) -> Result<Vec<Unit>> {
+    let source = fs::read_to_string(abs_path)?;
+    extractor.extract(&source, rel_path)
 }

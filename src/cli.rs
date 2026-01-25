@@ -14,7 +14,7 @@ pub struct Cli {
 pub enum Command {
     /// Run analysis and display metrics
     Check {
-        /// Path or symbol to constrain analysis to. Can be a file, directory, or symbol ID (e.g., 'handle_check', 'impl CacheStore').
+        /// Path or symbol to constrain analysis to. Can be a file, directory, or fully qualified symbol ID (e.g., 'src/main.rs::handle_check').
         target: Option<String>,
         /// Save extraction results to cache (by default, check is read-only)
         #[arg(long)]

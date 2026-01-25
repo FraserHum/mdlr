@@ -55,11 +55,31 @@ struct ExtractionContext<'a> {
 
 impl<'a> ExtractionContext<'a> {
     fn qualified_name(&self, name: &str) -> String {
-        if self.module_path.is_empty() {
-            name.to_string()
-        } else {
-            format!("{}::{}", self.module_path.join("::"), name)
+        let mut parts = Vec::new();
+
+        // Add module path if present
+        if !self.module_path.is_empty() {
+            parts.push(self.module_path.join("::"));
         }
+
+        // Add parent impl block if inside one (for methods)
+        if let Some(ref impl_name) = self.current_impl {
+            // Extract just the impl part without file prefix (e.g., "impl Foo" from "src/foo.rs::impl Foo")
+            // We split only once at the first "::" to separate file path from impl name
+            if let Some(idx) = impl_name.find("::") {
+                let impl_local = &impl_name[idx + 2..];
+                // Check if it starts with "impl " to avoid double-nesting for nested modules
+                if impl_local.starts_with("impl ") {
+                    parts.push(impl_local.to_string());
+                }
+            }
+        }
+
+        parts.push(name.to_string());
+
+        let local_name = parts.join("::");
+        // Prefix with file path to ensure global uniqueness
+        format!("{}::{}", self.path.display(), local_name)
     }
 }
 
@@ -431,9 +451,9 @@ fn add(a: i32, b: i32) -> i32 {
             .unwrap();
 
         assert_eq!(units.len(), 2);
-        assert_eq!(units[0].id, "hello");
+        assert_eq!(units[0].id, "test.rs::hello");
         assert_eq!(units[0].kind, UnitKind::Function);
-        assert_eq!(units[1].id, "add");
+        assert_eq!(units[1].id, "test.rs::add");
     }
 
     #[test]
@@ -450,7 +470,7 @@ struct Point {
             .unwrap();
 
         assert_eq!(units.len(), 1);
-        assert_eq!(units[0].id, "Point");
+        assert_eq!(units[0].id, "test.rs::Point");
         assert_eq!(units[0].kind, UnitKind::Struct);
     }
 
@@ -485,7 +505,7 @@ mod inner {
             .unwrap();
 
         assert_eq!(units.len(), 1);
-        assert_eq!(units[0].id, "inner::nested");
+        assert_eq!(units[0].id, "test.rs::inner::nested");
     }
 
     #[test]
@@ -623,16 +643,16 @@ impl Foo {
         // Should have: struct Foo, impl Foo, new, get_x, set_x
         assert_eq!(units.len(), 5);
 
-        let impl_unit = units.iter().find(|u| u.id == "impl Foo").unwrap();
+        let impl_unit = units.iter().find(|u| u.id == "test.rs::impl Foo").unwrap();
         assert_eq!(impl_unit.kind, UnitKind::Impl);
         assert_eq!(impl_unit.impl_type, Some("Foo".to_string()));
         assert_eq!(impl_unit.impl_trait, None);
 
-        let new_fn = units.iter().find(|u| u.id == "new").unwrap();
-        assert_eq!(new_fn.parent, Some("impl Foo".to_string()));
+        let new_fn = units.iter().find(|u| u.id == "test.rs::impl Foo::new").unwrap();
+        assert_eq!(new_fn.parent, Some("test.rs::impl Foo".to_string()));
 
-        let get_x = units.iter().find(|u| u.id == "get_x").unwrap();
-        assert_eq!(get_x.parent, Some("impl Foo".to_string()));
+        let get_x = units.iter().find(|u| u.id == "test.rs::impl Foo::get_x").unwrap();
+        assert_eq!(get_x.parent, Some("test.rs::impl Foo".to_string()));
     }
 
     #[test]
@@ -653,13 +673,13 @@ impl Display for Bar {
 
         let impl_unit = units
             .iter()
-            .find(|u| u.id == "impl Display for Bar")
+            .find(|u| u.id == "test.rs::impl Display for Bar")
             .unwrap();
         assert_eq!(impl_unit.impl_type, Some("Bar".to_string()));
         assert_eq!(impl_unit.impl_trait, Some("Display".to_string()));
 
-        let fmt_fn = units.iter().find(|u| u.id == "fmt").unwrap();
-        assert_eq!(fmt_fn.parent, Some("impl Display for Bar".to_string()));
+        let fmt_fn = units.iter().find(|u| u.id == "test.rs::impl Display for Bar::fmt").unwrap();
+        assert_eq!(fmt_fn.parent, Some("test.rs::impl Display for Bar".to_string()));
     }
 
     #[test]
@@ -681,12 +701,12 @@ impl Foo {
             .extract(source, &PathBuf::from("test.rs"))
             .unwrap();
 
-        let reader = units.iter().find(|u| u.id == "reader").unwrap();
+        let reader = units.iter().find(|u| u.id == "test.rs::impl Foo::reader").unwrap();
         assert!(reader.reads.contains(&"x".to_string()));
         assert!(reader.reads.contains(&"y".to_string()));
         assert!(reader.writes.is_empty());
 
-        let writer = units.iter().find(|u| u.id == "writer").unwrap();
+        let writer = units.iter().find(|u| u.id == "test.rs::impl Foo::writer").unwrap();
         assert!(writer.writes.contains(&"x".to_string()));
         assert!(writer.writes.contains(&"y".to_string()));
         assert!(writer.reads.contains(&"z".to_string()));
