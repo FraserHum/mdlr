@@ -6,7 +6,7 @@ use mdlr::cli::{Cli, Command, OutputFormat};
 use mdlr::config;
 use mdlr::extract::{extractor_for_path, Extractor};
 use mdlr::graph::{Edge, EdgeKind, Graph, Unit, UnitKind};
-use mdlr::metrics::{BucketedMetrics, ComplexityMetrics, ImplMetrics, TagMetrics};
+use mdlr::metrics::{BucketedMetrics, ComplexityMetrics, FileLocMetrics, ImplMetrics, TagMetrics};
 use mdlr::resolve::{CargoWorkspace, ResolutionContext};
 use mdlr::walk::SourceWalker;
 use std::collections::{HashMap, HashSet};
@@ -45,6 +45,7 @@ fn handle_metrics() -> Result<()> {
         ("methods_per_impl", "Number of methods in an impl block. High values may indicate a type with too many responsibilities."),
         ("traits_per_type", "Number of traits implemented by a type. High values may indicate a versatile type or one trying to do too much."),
         ("lcom", "Lack of Cohesion of Methods. High values indicate methods don't share state, suggesting the impl could be split."),
+        ("file_loc", "Lines of code per file. High values indicate large files that may be hard to navigate and maintain."),
         ("tag_coverage", "Percentage of units with semantic tags applied. Low values indicate incomplete conceptual mapping of the codebase."),
         ("conceptual_fan_out", "Number of distinct semantic concepts a unit participates in. High values indicate mixed responsibilities across domains."),
         ("concept_scattering", "How spread out a concept is across files. High values indicate poor cohesion; the concept should be consolidated."),
@@ -256,6 +257,7 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
     let metrics = mdlr::metrics::compute(&graph);
     let complexity = ComplexityMetrics::compute(&graph);
     let impl_metrics = ImplMetrics::compute(&graph);
+    let file_loc = FileLocMetrics::compute(&graph);
     // Load tags with staged changes overlaid
     let semantic_tags = store.load_tags_with_staged()?;
     let has_staged = store.has_staged_tags();
@@ -321,6 +323,13 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
             for (name, lcom) in impl_metrics.lcom.distribution.iter().take(take(impl_metrics.lcom.distribution.len())) {
                 if *lcom > 0.0 {
                     rows.push(("lcom".to_string(), name.clone(), format!("{:.2}", lcom)));
+                }
+            }
+
+            // File LOC opportunities
+            for (name, loc) in file_loc.distribution.iter().take(take(file_loc.distribution.len())) {
+                if *loc > 0 {
+                    rows.push(("file_loc".to_string(), name.clone(), loc.to_string()));
                 }
             }
 
@@ -494,6 +503,12 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
                             "max": impl_metrics.lcom.max,
                             "mean": impl_metrics.lcom.mean,
                         },
+                    },
+                    "file_loc": {
+                        "max": file_loc.max,
+                        "mean": file_loc.mean,
+                        "p90": file_loc.p90,
+                        "total": file_loc.total,
                     },
                     "semantic_tags": {
                         "total_units": tag_metrics.total_units,

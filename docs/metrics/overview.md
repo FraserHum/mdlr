@@ -20,6 +20,12 @@ mdlr computes structural metrics that help you understand the modularity and cou
 | [Parameter Count](complexity.md#parameter-count) | Number of parameters per function |
 | [Cyclomatic Complexity](complexity.md#cyclomatic-complexity) | Number of decision paths through a function |
 
+### File Metrics
+
+| Metric | Description |
+|--------|-------------|
+| [File LOC](file-loc.md) | Lines of code per file |
+
 ### Impl Metrics
 
 | Metric | Description |

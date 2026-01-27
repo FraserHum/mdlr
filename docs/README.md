@@ -16,6 +16,7 @@ A modularity analyzer for code. Uses tree-sitter to parse source files, builds a
 - [Fan-In](metrics/fan-in.md)
 - [Fan-Out](metrics/fan-out.md)
 - [Complexity](metrics/complexity.md) - function size, parameters, cyclomatic complexity
+- [File LOC](metrics/file-loc.md) - lines of code per file
 - [Impl Metrics](metrics/impl-metrics.md) - methods per impl, traits per type, LCOM
 - [Tag Coverage](metrics/tag-coverage.md)
 - [Interpreting Results](metrics/interpreting-results.md)
