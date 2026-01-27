@@ -10,9 +10,9 @@ mdlr check
 mdlr check src/metrics
 mdlr check src/main.rs
 
-# Analyze a specific symbol (function, impl, struct, etc.)
-mdlr check "src/main.rs::handle_check"
-mdlr check "src/cache/store.rs::impl CacheStore"
+# Analyze a specific symbol by fully qualified crate name
+mdlr check "mdlr::handle_check"
+mdlr check "mdlr::cache::store::impl CacheStore"
 
 # Show more results per metric
 mdlr check -k 10
@@ -39,6 +39,7 @@ mdlr metrics get cyclomatic
 
 - **fan_out**: Dependencies a unit has. High = too many responsibilities
 - **fan_in**: Units depending on this. Very high = potential bottleneck
-- **function_size**: Lines of code. High = hard to understand/test
+- **function_size**: Lines of code in a function. High = hard to understand/test
+- **file_loc**: Lines of code in a file. High = hard to navigate/maintain
 - **cyclomatic**: Branch complexity. High = hard to test/maintain
 - **lcom**: Lack of cohesion. High = impl block should be split
