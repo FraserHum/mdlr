@@ -267,69 +267,77 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
         OutputFormat::Text => {
             let take = |n: usize| if k < 0 { n } else { k as usize };
 
-            // Collect all rows: (metric, symbol, value)
-            let mut rows: Vec<(String, String, String)> = Vec::new();
+            // Collect all rows: (metric, symbol, value, bucket)
+            let mut rows: Vec<(String, String, String, String)> = Vec::new();
 
             // Fan-out opportunities
             for (name, count) in metrics.fan_out.distribution.iter().take(take(metrics.fan_out.distribution.len())) {
                 if *count > 0 {
-                    rows.push(("fan_out".to_string(), name.clone(), count.to_string()));
+                    let bucket = config.thresholds.fan_out_max.evaluate(*count as f64);
+                    rows.push(("fan_out".to_string(), name.clone(), count.to_string(), bucket.to_string()));
                 }
             }
 
             // Fan-in opportunities
             for (name, count) in metrics.fan_in.distribution.iter().take(take(metrics.fan_in.distribution.len())) {
                 if *count > 0 {
-                    rows.push(("fan_in".to_string(), name.clone(), count.to_string()));
+                    let bucket = config.thresholds.fan_in_max.evaluate(*count as f64);
+                    rows.push(("fan_in".to_string(), name.clone(), count.to_string(), bucket.to_string()));
                 }
             }
 
             // Function size opportunities
             for (name, size) in complexity.size.distribution.iter().take(take(complexity.size.distribution.len())) {
                 if *size > 1 {
-                    rows.push(("function_size".to_string(), name.clone(), size.to_string()));
+                    let bucket = config.thresholds.function_size.evaluate(*size as f64);
+                    rows.push(("function_size".to_string(), name.clone(), size.to_string(), bucket.to_string()));
                 }
             }
 
             // Parameter count opportunities
             for (name, params) in complexity.params.distribution.iter().take(take(complexity.params.distribution.len())) {
                 if *params > 0 {
-                    rows.push(("params".to_string(), name.clone(), params.to_string()));
+                    let bucket = config.thresholds.params.evaluate(*params as f64);
+                    rows.push(("params".to_string(), name.clone(), params.to_string(), bucket.to_string()));
                 }
             }
 
             // Cyclomatic complexity opportunities
             for (name, cc) in complexity.cyclomatic.distribution.iter().take(take(complexity.cyclomatic.distribution.len())) {
                 if *cc > 1 {
-                    rows.push(("cyclomatic".to_string(), name.clone(), cc.to_string()));
+                    let bucket = config.thresholds.cyclomatic.evaluate(*cc as f64);
+                    rows.push(("cyclomatic".to_string(), name.clone(), cc.to_string(), bucket.to_string()));
                 }
             }
 
             // Methods per impl opportunities
             for (name, count) in impl_metrics.methods_per_impl.distribution.iter().take(take(impl_metrics.methods_per_impl.distribution.len())) {
                 if *count > 0 {
-                    rows.push(("methods_per_impl".to_string(), name.clone(), count.to_string()));
+                    let bucket = config.thresholds.methods_per_impl.evaluate(*count as f64);
+                    rows.push(("methods_per_impl".to_string(), name.clone(), count.to_string(), bucket.to_string()));
                 }
             }
 
             // Traits per type opportunities
             for (name, count) in impl_metrics.traits_per_type.distribution.iter().take(take(impl_metrics.traits_per_type.distribution.len())) {
                 if *count > 0 {
-                    rows.push(("traits_per_type".to_string(), name.clone(), count.to_string()));
+                    let bucket = config.thresholds.traits_per_type.evaluate(*count as f64);
+                    rows.push(("traits_per_type".to_string(), name.clone(), count.to_string(), bucket.to_string()));
                 }
             }
 
             // LCOM opportunities
             for (name, lcom) in impl_metrics.lcom.distribution.iter().take(take(impl_metrics.lcom.distribution.len())) {
                 if *lcom > 0.0 {
-                    rows.push(("lcom".to_string(), name.clone(), format!("{:.2}", lcom)));
+                    let bucket = config.thresholds.lcom.evaluate(*lcom);
+                    rows.push(("lcom".to_string(), name.clone(), format!("{:.2}", lcom), bucket.to_string()));
                 }
             }
 
-            // File LOC opportunities
+            // File LOC opportunities (no threshold in config)
             for (name, loc) in file_loc.distribution.iter().take(take(file_loc.distribution.len())) {
                 if *loc > 0 {
-                    rows.push(("file_loc".to_string(), name.clone(), loc.to_string()));
+                    rows.push(("file_loc".to_string(), name.clone(), loc.to_string(), "-".to_string()));
                 }
             }
 
@@ -337,13 +345,13 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
             if let Some(ref conceptual) = tag_metrics.conceptual {
                 for (name, count) in conceptual.conceptual_fan_out.top.iter().take(take(conceptual.conceptual_fan_out.top.len())) {
                     if *count > 1 {
-                        rows.push(("conceptual_fan_out".to_string(), name.clone(), count.to_string()));
+                        rows.push(("conceptual_fan_out".to_string(), name.clone(), count.to_string(), "-".to_string()));
                     }
                 }
 
                 for scatter in conceptual.concept_scattering.iter().take(take(conceptual.concept_scattering.len())) {
                     if scatter.file_count > 1 {
-                        rows.push(("concept_scattering".to_string(), scatter.tag.clone(), format!("{:.2}", scatter.scatter_ratio)));
+                        rows.push(("concept_scattering".to_string(), scatter.tag.clone(), format!("{:.2}", scatter.scatter_ratio), "-".to_string()));
                     }
                 }
             }
@@ -351,16 +359,16 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
             // Print output
             if pretty {
                 let mut tw = tabwriter::TabWriter::new(vec![]);
-                writeln!(tw, "metric\tsymbol\tvalue")?;
-                for (metric, symbol, value) in &rows {
-                    writeln!(tw, "{}\t{}\t{}", metric, symbol, value)?;
+                writeln!(tw, "metric\tsymbol\tvalue\tbucket")?;
+                for (metric, symbol, value, bucket) in &rows {
+                    writeln!(tw, "{}\t{}\t{}\t{}", metric, symbol, value, bucket)?;
                 }
                 tw.flush()?;
                 print!("{}", String::from_utf8_lossy(&tw.into_inner()?));
             } else {
-                println!("metric\tsymbol\tvalue");
-                for (metric, symbol, value) in &rows {
-                    println!("{}\t{}\t{}", metric, symbol, value);
+                println!("metric\tsymbol\tvalue\tbucket");
+                for (metric, symbol, value, bucket) in &rows {
+                    println!("{}\t{}\t{}\t{}", metric, symbol, value, bucket);
                 }
             }
 
