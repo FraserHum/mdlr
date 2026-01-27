@@ -113,6 +113,8 @@ pub struct ThresholdsConfig {
     pub traits_per_type: MetricThresholds,
     #[serde(default = "default_lcom")]
     pub lcom: MetricThresholds,
+    #[serde(default = "default_file_loc")]
+    pub file_loc: MetricThresholds,
 }
 
 fn default_dag_density() -> MetricThresholds {
@@ -215,6 +217,15 @@ fn default_lcom() -> MetricThresholds {
     }
 }
 
+fn default_file_loc() -> MetricThresholds {
+    MetricThresholds {
+        excellent: 200.0,
+        good: 400.0,
+        fair: 600.0,
+        poor: 1000.0,
+    }
+}
+
 impl Default for ThresholdsConfig {
     fn default() -> Self {
         Self {
@@ -229,6 +240,7 @@ impl Default for ThresholdsConfig {
             methods_per_impl: default_methods_per_impl(),
             traits_per_type: default_traits_per_type(),
             lcom: default_lcom(),
+            file_loc: default_file_loc(),
         }
     }
 }

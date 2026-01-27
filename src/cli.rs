@@ -30,7 +30,10 @@ pub enum Command {
         format: OutputFormat,
     },
     /// List supported metrics with descriptions
-    Metrics,
+    Metrics {
+        #[command(subcommand)]
+        command: MetricsCommand,
+    },
     /// Output a markdown prompt for agent consumption
     Prompt,
     /// List symbols (units) in a file or directory
@@ -72,6 +75,17 @@ pub enum Command {
         /// Output format
         #[arg(long, default_value = "text")]
         format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MetricsCommand {
+    /// List all available metrics
+    Ls,
+    /// Get details about a specific metric including thresholds
+    Get {
+        /// Name of the metric to get details for
+        name: String,
     },
 }
 

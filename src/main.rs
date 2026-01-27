@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use std::io::Write;
 use mdlr::cache::{get_file_metadata, now_timestamp, CacheStore, FileCacheEntry};
-use mdlr::cli::{Cli, Command, OutputFormat};
+use mdlr::cli::{Cli, Command, MetricsCommand, OutputFormat};
 use mdlr::config;
 use mdlr::extract::{extractor_for_path, Extractor};
 use mdlr::graph::{Edge, EdgeKind, Graph, Unit, UnitKind};
@@ -19,7 +19,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Check { target, save, k, pretty, format } => handle_check(target.as_deref(), save, k, pretty, format),
-        Command::Metrics => handle_metrics(),
+        Command::Metrics { command } => handle_metrics(command),
         Command::Prompt => handle_prompt(),
         Command::Ls { path, kind, format } => handle_ls(&path, kind, format),
         Command::Get { symbol, format } => handle_get(&symbol, format),
@@ -34,8 +34,8 @@ fn main() -> Result<()> {
     }
 }
 
-fn handle_metrics() -> Result<()> {
-    let metrics = [
+fn get_metric_descriptions() -> Vec<(&'static str, &'static str)> {
+    vec![
         ("dag_density", "Ratio of edges to nodes in the dependency graph. High values indicate tightly coupled code; low values suggest isolated components."),
         ("fan_in", "Number of incoming dependencies to a unit. High values indicate core/shared code; very high may signal a bottleneck."),
         ("fan_out", "Number of outgoing dependencies from a unit. High values indicate a unit with many responsibilities that may need refactoring."),
@@ -50,12 +50,60 @@ fn handle_metrics() -> Result<()> {
         ("conceptual_fan_out", "Number of distinct semantic concepts a unit participates in. High values indicate mixed responsibilities across domains."),
         ("concept_scattering", "How spread out a concept is across files. High values indicate poor cohesion; the concept should be consolidated."),
         ("cross_concept_ratio", "Percentage of edges crossing concept boundaries. High values indicate tight coupling between different domains."),
-    ];
+    ]
+}
 
-    for (name, description) in metrics {
-        println!("{}", name);
-        println!("  {}", description);
-        println!();
+fn handle_metrics(command: MetricsCommand) -> Result<()> {
+    match command {
+        MetricsCommand::Ls => {
+            for (name, description) in get_metric_descriptions() {
+                println!("{}", name);
+                println!("  {}", description);
+                println!();
+            }
+        }
+        MetricsCommand::Get { name } => {
+            let descriptions = get_metric_descriptions();
+            let metric = descriptions.iter().find(|(n, _)| *n == name);
+
+            match metric {
+                Some((name, description)) => {
+                    println!("{}", name);
+                    println!("  {}", description);
+                    println!();
+
+                    // Get thresholds from config
+                    let config = config::load()?;
+                    let thresholds = match *name {
+                        "dag_density" => Some(&config.thresholds.dag_density),
+                        "fan_in" => Some(&config.thresholds.fan_in_max),
+                        "fan_out" => Some(&config.thresholds.fan_out_max),
+                        "function_size" => Some(&config.thresholds.function_size),
+                        "params" => Some(&config.thresholds.params),
+                        "cyclomatic" => Some(&config.thresholds.cyclomatic),
+                        "methods_per_impl" => Some(&config.thresholds.methods_per_impl),
+                        "traits_per_type" => Some(&config.thresholds.traits_per_type),
+                        "lcom" => Some(&config.thresholds.lcom),
+                        "file_loc" => Some(&config.thresholds.file_loc),
+                        _ => None,
+                    };
+
+                    if let Some(t) = thresholds {
+                        println!("thresholds:");
+                        println!("  excellent  < {}", t.excellent);
+                        println!("  good       < {}", t.good);
+                        println!("  fair       < {}", t.fair);
+                        println!("  poor       < {}", t.poor);
+                        println!("  critical   >= {}", t.poor);
+                    } else {
+                        println!("(no thresholds defined)");
+                    }
+                }
+                None => {
+                    bail!("Unknown metric '{}'. Run 'mdlr metrics ls' to see available metrics.", name);
+                }
+            }
+        }
     }
 
     Ok(())
@@ -334,10 +382,11 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
                 }
             }
 
-            // File LOC opportunities (no threshold in config)
+            // File LOC opportunities
             for (name, loc) in file_loc.distribution.iter().take(take(file_loc.distribution.len())) {
                 if *loc > 0 {
-                    rows.push(("file_loc".to_string(), name.clone(), loc.to_string(), "-".to_string()));
+                    let bucket = config.thresholds.file_loc.evaluate(*loc as f64);
+                    rows.push(("file_loc".to_string(), name.clone(), loc.to_string(), bucket.to_string()));
                 }
             }
 

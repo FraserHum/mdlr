@@ -21,7 +21,10 @@ mdlr check -k 10
 mdlr check --pretty
 
 # List available metrics and their meanings
-mdlr metrics
+mdlr metrics ls
+
+# Get details about a specific metric including thresholds
+mdlr metrics get cyclomatic
 ```
 
 ## Workflow
