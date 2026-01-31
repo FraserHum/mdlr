@@ -542,8 +542,8 @@ fn format_json_output(
         "edges": computed.graph.edges.len(),
         "metrics": {
             "dag_density": build_bucketed_json(&bucketed.dag_density),
-            "fan_in": build_fan_metrics_json(&bucketed.fan_in),
-            "fan_out": build_fan_metrics_json(&bucketed.fan_out),
+            "fan_in": build_fan_metrics_json(&bucketed.fan_in, &computed.structural.fan_in.distribution),
+            "fan_out": build_fan_metrics_json(&bucketed.fan_out, &computed.structural.fan_out.distribution),
             "complexity": build_complexity_json(&computed.complexity),
             "struct": build_struct_json(&computed.struct_metrics),
             "file_loc": build_file_loc_json(&computed.file_loc),
