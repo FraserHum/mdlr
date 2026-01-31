@@ -1,5 +1,9 @@
 pub mod store;
+mod tags_store;
 pub mod types;
 
-pub use store::{get_file_metadata, now_timestamp, CacheStore};
-pub use types::{validate_tag, FileCacheEntry, FileMetadata, ProjectIndex, SemanticTags, StagedTags};
+pub use store::{CacheStore, get_file_metadata, now_timestamp};
+pub use types::{
+    FileCacheEntry, FileMetadata, ProjectIndex, SemanticTags, StagedTags,
+    validate_tag,
+};

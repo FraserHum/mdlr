@@ -43,11 +43,7 @@ impl ImplMetrics {
         let traits_per_type = compute_traits_per_type(graph);
         let lcom = compute_lcom(graph);
 
-        Self {
-            methods_per_impl,
-            traits_per_type,
-            lcom,
-        }
+        Self { methods_per_impl, traits_per_type, lcom }
     }
 
     pub fn has_impls(&self) -> bool {
@@ -87,7 +83,8 @@ fn compute_methods_per_impl(graph: &Graph) -> MethodsPerImpl {
     let sum: usize = impl_method_count.values().sum();
     let mean = sum as f64 / impl_method_count.len() as f64;
 
-    let mut sorted_values: Vec<usize> = impl_method_count.values().copied().collect();
+    let mut sorted_values: Vec<usize> =
+        impl_method_count.values().copied().collect();
     sorted_values.sort();
     let p90_idx = (sorted_values.len() as f64 * 0.9).ceil() as usize - 1;
     let p90 = sorted_values.get(p90_idx).copied().unwrap_or(max);
@@ -95,12 +92,7 @@ fn compute_methods_per_impl(graph: &Graph) -> MethodsPerImpl {
     let mut distribution: Vec<_> = impl_method_count.into_iter().collect();
     distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    MethodsPerImpl {
-        max,
-        mean,
-        p90,
-        distribution,
-    }
+    MethodsPerImpl { max, mean, p90, distribution }
 }
 
 fn compute_traits_per_type(graph: &Graph) -> TraitsPerType {
@@ -108,7 +100,8 @@ fn compute_traits_per_type(graph: &Graph) -> TraitsPerType {
 
     for unit in &graph.units {
         if unit.kind == UnitKind::Impl {
-            if let (Some(impl_type), Some(impl_trait)) = (&unit.impl_type, &unit.impl_trait)
+            if let (Some(impl_type), Some(impl_trait)) =
+                (&unit.impl_type, &unit.impl_trait)
             {
                 type_traits
                     .entry(impl_type.clone())
@@ -119,17 +112,11 @@ fn compute_traits_per_type(graph: &Graph) -> TraitsPerType {
     }
 
     if type_traits.is_empty() {
-        return TraitsPerType {
-            max: 0,
-            mean: 0.0,
-            distribution: vec![],
-        };
+        return TraitsPerType { max: 0, mean: 0.0, distribution: vec![] };
     }
 
-    let counts: HashMap<String, usize> = type_traits
-        .into_iter()
-        .map(|(t, traits)| (t, traits.len()))
-        .collect();
+    let counts: HashMap<String, usize> =
+        type_traits.into_iter().map(|(t, traits)| (t, traits.len())).collect();
 
     let max = counts.values().copied().max().unwrap_or(0);
     let sum: usize = counts.values().sum();
@@ -138,16 +125,57 @@ fn compute_traits_per_type(graph: &Graph) -> TraitsPerType {
     let mut distribution: Vec<_> = counts.into_iter().collect();
     distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    TraitsPerType {
-        max,
-        mean,
-        distribution,
+    TraitsPerType { max, mean, distribution }
+}
+
+/// Compute LCOM for a single impl block.
+/// Returns the normalized LCOM value (0.0 = cohesive, 1.0 = incohesive).
+fn compute_impl_lcom(methods: &[&crate::graph::Unit]) -> f64 {
+    if methods.len() < 2 {
+        return 0.0;
     }
+
+    // Count pairs of methods that share fields vs don't share
+    let mut shares_field = 0;
+    let mut no_shared_field = 0;
+
+    for i in 0..methods.len() {
+        for j in (i + 1)..methods.len() {
+            let fields_i: HashSet<_> = methods[i]
+                .reads
+                .iter()
+                .chain(methods[i].writes.iter())
+                .collect();
+            let fields_j: HashSet<_> = methods[j]
+                .reads
+                .iter()
+                .chain(methods[j].writes.iter())
+                .collect();
+
+            if fields_i.intersection(&fields_j).next().is_some() {
+                shares_field += 1;
+            } else {
+                no_shared_field += 1;
+            }
+        }
+    }
+
+    // LCOM = max(0, P - Q) where P = pairs not sharing, Q = pairs sharing
+    let lcom = if no_shared_field > shares_field {
+        (no_shared_field - shares_field) as f64
+    } else {
+        0.0
+    };
+
+    // Normalize by total pairs for comparison
+    let total_pairs = (methods.len() * (methods.len() - 1)) / 2;
+    if total_pairs > 0 { lcom / total_pairs as f64 } else { 0.0 }
 }
 
 fn compute_lcom(graph: &Graph) -> LcomMetrics {
     // Group methods by impl
-    let mut impl_methods: HashMap<String, Vec<&crate::graph::Unit>> = HashMap::new();
+    let mut impl_methods: HashMap<String, Vec<&crate::graph::Unit>> =
+        HashMap::new();
 
     for unit in &graph.units {
         if unit.kind == UnitKind::Function {
@@ -157,70 +185,13 @@ fn compute_lcom(graph: &Graph) -> LcomMetrics {
         }
     }
 
-    let mut lcom_values: HashMap<String, f64> = HashMap::new();
-
-    for (impl_id, methods) in impl_methods {
-        if methods.len() < 2 {
-            // LCOM is 0 for single-method impls
-            lcom_values.insert(impl_id, 0.0);
-            continue;
-        }
-
-        // Compute LCOM using Henderson-Sellers formula:
-        // LCOM = (m - sum(mA)/a) / (m - 1)
-        // where m = number of methods, a = number of attributes
-        // mA = number of methods accessing attribute A
-        //
-        // Simplified: count pairs of methods that share fields vs don't share
-
-        let mut shares_field = 0;
-        let mut no_shared_field = 0;
-
-        for i in 0..methods.len() {
-            for j in (i + 1)..methods.len() {
-                let fields_i: HashSet<_> = methods[i]
-                    .reads
-                    .iter()
-                    .chain(methods[i].writes.iter())
-                    .collect();
-                let fields_j: HashSet<_> = methods[j]
-                    .reads
-                    .iter()
-                    .chain(methods[j].writes.iter())
-                    .collect();
-
-                if fields_i.intersection(&fields_j).next().is_some() {
-                    shares_field += 1;
-                } else {
-                    no_shared_field += 1;
-                }
-            }
-        }
-
-        // LCOM = max(0, P - Q) where P = pairs not sharing, Q = pairs sharing
-        let lcom = if no_shared_field > shares_field {
-            (no_shared_field - shares_field) as f64
-        } else {
-            0.0
-        };
-
-        // Normalize by total pairs for comparison
-        let total_pairs = (methods.len() * (methods.len() - 1)) / 2;
-        let normalized_lcom = if total_pairs > 0 {
-            lcom / total_pairs as f64
-        } else {
-            0.0
-        };
-
-        lcom_values.insert(impl_id, normalized_lcom);
-    }
+    let lcom_values: HashMap<String, f64> = impl_methods
+        .into_iter()
+        .map(|(impl_id, methods)| (impl_id, compute_impl_lcom(&methods)))
+        .collect();
 
     if lcom_values.is_empty() {
-        return LcomMetrics {
-            max: 0.0,
-            mean: 0.0,
-            distribution: vec![],
-        };
+        return LcomMetrics { max: 0.0, mean: 0.0, distribution: vec![] };
     }
 
     let max = lcom_values
@@ -237,11 +208,7 @@ fn compute_lcom(graph: &Graph) -> LcomMetrics {
             .then_with(|| a.0.cmp(&b.0))
     });
 
-    LcomMetrics {
-        max,
-        mean,
-        distribution,
-    }
+    LcomMetrics { max, mean, distribution }
 }
 
 impl std::fmt::Display for ImplMetrics {
@@ -253,7 +220,9 @@ impl std::fmt::Display for ImplMetrics {
         writeln!(
             f,
             "Methods/Impl: max={}, mean={:.1}, p90={}",
-            self.methods_per_impl.max, self.methods_per_impl.mean, self.methods_per_impl.p90
+            self.methods_per_impl.max,
+            self.methods_per_impl.mean,
+            self.methods_per_impl.p90
         )?;
 
         if self.traits_per_type.max > 0 {
@@ -354,7 +323,12 @@ mod tests {
         }
     }
 
-    fn make_method(id: &str, parent: &str, reads: Vec<&str>, writes: Vec<&str>) -> Unit {
+    fn make_method(
+        id: &str,
+        parent: &str,
+        reads: Vec<&str>,
+        writes: Vec<&str>,
+    ) -> Unit {
         Unit {
             id: id.to_string(),
             kind: UnitKind::Function,
@@ -397,10 +371,18 @@ mod tests {
     #[test]
     fn test_traits_per_type() {
         let mut graph = Graph::new();
-        graph.add_unit(make_impl("impl Display for Foo", "Foo", Some("Display")));
+        graph.add_unit(make_impl(
+            "impl Display for Foo",
+            "Foo",
+            Some("Display"),
+        ));
         graph.add_unit(make_impl("impl Debug for Foo", "Foo", Some("Debug")));
         graph.add_unit(make_impl("impl Clone for Foo", "Foo", Some("Clone")));
-        graph.add_unit(make_impl("impl Display for Bar", "Bar", Some("Display")));
+        graph.add_unit(make_impl(
+            "impl Display for Bar",
+            "Bar",
+            Some("Display"),
+        ));
 
         let metrics = ImplMetrics::compute(&graph);
 

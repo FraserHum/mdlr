@@ -52,7 +52,8 @@ impl ComplexityMetrics {
             }
 
             // Size from span
-            let size = unit.span.end_line.saturating_sub(unit.span.start_line) + 1;
+            let size =
+                unit.span.end_line.saturating_sub(unit.span.start_line) + 1;
             sizes.insert(unit.id.clone(), size);
 
             // Parameter count (from unit.params if available)
@@ -79,12 +80,7 @@ impl ComplexityMetrics {
 impl SizeMetrics {
     fn from_counts(counts: HashMap<String, usize>) -> Self {
         if counts.is_empty() {
-            return Self {
-                max: 0,
-                mean: 0.0,
-                p90: 0,
-                distribution: vec![],
-            };
+            return Self { max: 0, mean: 0.0, p90: 0, distribution: vec![] };
         }
 
         let max = counts.values().copied().max().unwrap_or(0);
@@ -99,23 +95,14 @@ impl SizeMetrics {
         let mut distribution: Vec<_> = counts.into_iter().collect();
         distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-        Self {
-            max,
-            mean,
-            p90,
-            distribution,
-        }
+        Self { max, mean, p90, distribution }
     }
 }
 
 impl ParamMetrics {
     fn from_counts(counts: HashMap<String, usize>) -> Self {
         if counts.is_empty() {
-            return Self {
-                max: 0,
-                mean: 0.0,
-                distribution: vec![],
-            };
+            return Self { max: 0, mean: 0.0, distribution: vec![] };
         }
 
         let max = counts.values().copied().max().unwrap_or(0);
@@ -125,23 +112,14 @@ impl ParamMetrics {
         let mut distribution: Vec<_> = counts.into_iter().collect();
         distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-        Self {
-            max,
-            mean,
-            distribution,
-        }
+        Self { max, mean, distribution }
     }
 }
 
 impl CyclomaticMetrics {
     fn from_counts(counts: HashMap<String, usize>) -> Self {
         if counts.is_empty() {
-            return Self {
-                max: 0,
-                mean: 0.0,
-                p90: 0,
-                distribution: vec![],
-            };
+            return Self { max: 0, mean: 0.0, p90: 0, distribution: vec![] };
         }
 
         let max = counts.values().copied().max().unwrap_or(0);
@@ -156,12 +134,7 @@ impl CyclomaticMetrics {
         let mut distribution: Vec<_> = counts.into_iter().collect();
         distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-        Self {
-            max,
-            mean,
-            p90,
-            distribution,
-        }
+        Self { max, mean, p90, distribution }
     }
 }
 
@@ -249,7 +222,13 @@ mod tests {
     use crate::graph::{Span, Unit};
     use std::path::PathBuf;
 
-    fn make_function(id: &str, start: usize, end: usize, params: usize, branches: usize) -> Unit {
+    fn make_function(
+        id: &str,
+        start: usize,
+        end: usize,
+        params: usize,
+        branches: usize,
+    ) -> Unit {
         Unit {
             id: id.to_string(),
             kind: UnitKind::Function,

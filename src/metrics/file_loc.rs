@@ -54,13 +54,7 @@ impl FileLocMetrics {
         let mut distribution: Vec<_> = counts.into_iter().collect();
         distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-        Self {
-            max,
-            mean,
-            p90,
-            total,
-            distribution,
-        }
+        Self { max, mean, p90, total, distribution }
     }
 }
 
@@ -75,12 +69,7 @@ mod tests {
             id: format!("{}::unit_{}", file, end_line),
             kind: UnitKind::Function,
             file: PathBuf::from(file),
-            span: Span {
-                start_line: 1,
-                start_col: 0,
-                end_line,
-                end_col: 0,
-            },
+            span: Span { start_line: 1, start_col: 0, end_line, end_col: 0 },
             reads: vec![],
             writes: vec![],
             calls: vec![],

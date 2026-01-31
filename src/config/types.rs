@@ -37,7 +37,9 @@ impl std::fmt::Display for Bucket {
 }
 
 /// Display mode for metric output
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum DisplayMode {
     #[default]
@@ -72,7 +74,6 @@ impl MetricThresholds {
     }
 }
 
-
 /// Display configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplayConfig {
@@ -82,9 +83,7 @@ pub struct DisplayConfig {
 
 impl Default for DisplayConfig {
     fn default() -> Self {
-        Self {
-            mode: DisplayMode::Both,
-        }
+        Self { mode: DisplayMode::Both }
     }
 }
 
@@ -117,130 +116,136 @@ pub struct ThresholdsConfig {
     pub file_loc: MetricThresholds,
 }
 
-fn default_dag_density() -> MetricThresholds {
-    MetricThresholds {
-        excellent: 0.5,
-        good: 1.0,
-        fair: 1.5,
-        poor: 2.0,
-    }
-}
+/// Default threshold values as constants
+mod defaults {
+    use super::MetricThresholds;
 
-fn default_fan_in_max() -> MetricThresholds {
-    MetricThresholds {
-        excellent: 3.0,
-        good: 5.0,
-        fair: 10.0,
-        poor: 15.0,
-    }
-}
+    pub const DAG_DENSITY: MetricThresholds =
+        MetricThresholds { excellent: 0.5, good: 1.0, fair: 1.5, poor: 2.0 };
 
-fn default_fan_in_mean() -> MetricThresholds {
-    MetricThresholds {
-        excellent: 0.5,
-        good: 1.0,
-        fair: 2.0,
-        poor: 3.0,
-    }
-}
+    pub const FAN_IN_MAX: MetricThresholds =
+        MetricThresholds { excellent: 3.0, good: 5.0, fair: 10.0, poor: 15.0 };
 
-fn default_fan_out_max() -> MetricThresholds {
-    MetricThresholds {
-        excellent: 3.0,
-        good: 5.0,
-        fair: 8.0,
-        poor: 12.0,
-    }
-}
+    pub const FAN_IN_MEAN: MetricThresholds =
+        MetricThresholds { excellent: 0.5, good: 1.0, fair: 2.0, poor: 3.0 };
 
-fn default_fan_out_mean() -> MetricThresholds {
-    MetricThresholds {
-        excellent: 0.5,
-        good: 1.0,
-        fair: 2.0,
-        poor: 3.0,
-    }
-}
+    pub const FAN_OUT_MAX: MetricThresholds =
+        MetricThresholds { excellent: 3.0, good: 5.0, fair: 8.0, poor: 12.0 };
 
-fn default_function_size() -> MetricThresholds {
-    MetricThresholds {
+    pub const FAN_OUT_MEAN: MetricThresholds =
+        MetricThresholds { excellent: 0.5, good: 1.0, fair: 2.0, poor: 3.0 };
+
+    pub const FUNCTION_SIZE: MetricThresholds = MetricThresholds {
         excellent: 20.0,
         good: 50.0,
         fair: 100.0,
         poor: 200.0,
-    }
-}
+    };
 
-fn default_params() -> MetricThresholds {
-    MetricThresholds {
-        excellent: 3.0,
-        good: 5.0,
-        fair: 7.0,
-        poor: 10.0,
-    }
-}
+    pub const PARAMS: MetricThresholds =
+        MetricThresholds { excellent: 3.0, good: 5.0, fair: 7.0, poor: 10.0 };
 
-fn default_cyclomatic() -> MetricThresholds {
-    MetricThresholds {
+    pub const CYCLOMATIC: MetricThresholds = MetricThresholds {
         excellent: 5.0,
         good: 10.0,
         fair: 20.0,
         poor: 30.0,
-    }
-}
+    };
 
-fn default_methods_per_impl() -> MetricThresholds {
-    MetricThresholds {
+    pub const METHODS_PER_IMPL: MetricThresholds = MetricThresholds {
         excellent: 5.0,
         good: 10.0,
         fair: 15.0,
         poor: 25.0,
-    }
-}
+    };
 
-fn default_traits_per_type() -> MetricThresholds {
-    MetricThresholds {
-        excellent: 3.0,
-        good: 5.0,
-        fair: 8.0,
-        poor: 12.0,
-    }
-}
+    pub const TRAITS_PER_TYPE: MetricThresholds =
+        MetricThresholds { excellent: 3.0, good: 5.0, fair: 8.0, poor: 12.0 };
 
-fn default_lcom() -> MetricThresholds {
     // LCOM is normalized 0-1, higher = less cohesive
-    MetricThresholds {
-        excellent: 0.2,
-        good: 0.4,
-        fair: 0.6,
-        poor: 0.8,
-    }
-}
+    pub const LCOM: MetricThresholds =
+        MetricThresholds { excellent: 0.2, good: 0.4, fair: 0.6, poor: 0.8 };
 
-fn default_file_loc() -> MetricThresholds {
-    MetricThresholds {
+    pub const FILE_LOC: MetricThresholds = MetricThresholds {
         excellent: 200.0,
         good: 400.0,
         fair: 600.0,
         poor: 1000.0,
-    }
+    };
+}
+
+// Serde default functions (required for partial deserialization)
+fn default_dag_density() -> MetricThresholds {
+    defaults::DAG_DENSITY
+}
+fn default_fan_in_max() -> MetricThresholds {
+    defaults::FAN_IN_MAX
+}
+fn default_fan_in_mean() -> MetricThresholds {
+    defaults::FAN_IN_MEAN
+}
+fn default_fan_out_max() -> MetricThresholds {
+    defaults::FAN_OUT_MAX
+}
+fn default_fan_out_mean() -> MetricThresholds {
+    defaults::FAN_OUT_MEAN
+}
+fn default_function_size() -> MetricThresholds {
+    defaults::FUNCTION_SIZE
+}
+fn default_params() -> MetricThresholds {
+    defaults::PARAMS
+}
+fn default_cyclomatic() -> MetricThresholds {
+    defaults::CYCLOMATIC
+}
+fn default_methods_per_impl() -> MetricThresholds {
+    defaults::METHODS_PER_IMPL
+}
+fn default_traits_per_type() -> MetricThresholds {
+    defaults::TRAITS_PER_TYPE
+}
+fn default_lcom() -> MetricThresholds {
+    defaults::LCOM
+}
+fn default_file_loc() -> MetricThresholds {
+    defaults::FILE_LOC
 }
 
 impl Default for ThresholdsConfig {
     fn default() -> Self {
         Self {
-            dag_density: default_dag_density(),
-            fan_in_max: default_fan_in_max(),
-            fan_in_mean: default_fan_in_mean(),
-            fan_out_max: default_fan_out_max(),
-            fan_out_mean: default_fan_out_mean(),
-            function_size: default_function_size(),
-            params: default_params(),
-            cyclomatic: default_cyclomatic(),
-            methods_per_impl: default_methods_per_impl(),
-            traits_per_type: default_traits_per_type(),
-            lcom: default_lcom(),
-            file_loc: default_file_loc(),
+            dag_density: defaults::DAG_DENSITY,
+            fan_in_max: defaults::FAN_IN_MAX,
+            fan_in_mean: defaults::FAN_IN_MEAN,
+            fan_out_max: defaults::FAN_OUT_MAX,
+            fan_out_mean: defaults::FAN_OUT_MEAN,
+            function_size: defaults::FUNCTION_SIZE,
+            params: defaults::PARAMS,
+            cyclomatic: defaults::CYCLOMATIC,
+            methods_per_impl: defaults::METHODS_PER_IMPL,
+            traits_per_type: defaults::TRAITS_PER_TYPE,
+            lcom: defaults::LCOM,
+            file_loc: defaults::FILE_LOC,
+        }
+    }
+}
+
+impl ThresholdsConfig {
+    /// Get thresholds for a metric by name
+    pub fn get(&self, name: &str) -> Option<&MetricThresholds> {
+        match name {
+            "dag_density" => Some(&self.dag_density),
+            "fan_in" => Some(&self.fan_in_max),
+            "fan_out" => Some(&self.fan_out_max),
+            "function_size" => Some(&self.function_size),
+            "params" => Some(&self.params),
+            "cyclomatic" => Some(&self.cyclomatic),
+            "methods_per_impl" => Some(&self.methods_per_impl),
+            "traits_per_type" => Some(&self.traits_per_type),
+            "lcom" => Some(&self.lcom),
+            "file_loc" => Some(&self.file_loc),
+            _ => None,
         }
     }
 }

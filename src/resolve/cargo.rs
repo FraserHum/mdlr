@@ -40,11 +40,13 @@ impl CargoWorkspace {
             .context("Cargo.toml has no parent directory")?
             .to_path_buf();
 
-        let content = std::fs::read_to_string(&root_manifest)
-            .with_context(|| format!("Failed to read {}", root_manifest.display()))?;
-        let manifest: toml::Value = content
-            .parse()
-            .with_context(|| format!("Failed to parse {}", root_manifest.display()))?;
+        let content =
+            std::fs::read_to_string(&root_manifest).with_context(|| {
+                format!("Failed to read {}", root_manifest.display())
+            })?;
+        let manifest: toml::Value = content.parse().with_context(|| {
+            format!("Failed to parse {}", root_manifest.display())
+        })?;
 
         let mut members = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -52,13 +54,18 @@ impl CargoWorkspace {
         // Check if this is a workspace or a single crate
         if let Some(workspace) = manifest.get("workspace") {
             // Workspace manifest - discover members
-            if let Some(member_patterns) = workspace.get("members").and_then(|v| v.as_array()) {
+            if let Some(member_patterns) =
+                workspace.get("members").and_then(|v| v.as_array())
+            {
                 for pattern in member_patterns {
                     if let Some(pattern_str) = pattern.as_str() {
-                        let member_paths = expand_glob_pattern(&root, pattern_str);
+                        let member_paths =
+                            expand_glob_pattern(&root, pattern_str);
                         for member_path in member_paths {
                             if seen.insert(member_path.clone()) {
-                                if let Ok(crate_info) = parse_crate(&member_path) {
+                                if let Ok(crate_info) =
+                                    parse_crate(&member_path)
+                                {
                                     members.push(crate_info);
                                 }
                             }
@@ -127,9 +134,7 @@ impl CrateInfo {
 /// Find the workspace root Cargo.toml by walking up from start_dir.
 fn find_workspace_root(start_dir: &Path) -> Result<PathBuf> {
     let start = if start_dir.is_file() {
-        start_dir
-            .parent()
-            .context("File has no parent directory")?
+        start_dir.parent().context("File has no parent directory")?
     } else {
         start_dir
     };
@@ -224,11 +229,13 @@ fn expand_glob_pattern(root: &Path, pattern: &str) -> Vec<PathBuf> {
 /// Parse a single crate's Cargo.toml.
 fn parse_crate(crate_root: &Path) -> Result<CrateInfo> {
     let manifest_path = crate_root.join("Cargo.toml");
-    let content = std::fs::read_to_string(&manifest_path)
-        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
-    let manifest: toml::Value = content
-        .parse()
-        .with_context(|| format!("Failed to parse {}", manifest_path.display()))?;
+    let content =
+        std::fs::read_to_string(&manifest_path).with_context(|| {
+            format!("Failed to read {}", manifest_path.display())
+        })?;
+    let manifest: toml::Value = content.parse().with_context(|| {
+        format!("Failed to parse {}", manifest_path.display())
+    })?;
 
     // Get package name
     let name = manifest
@@ -317,12 +324,18 @@ fn get_bin_paths(manifest: &toml::Value, crate_root: &Path) -> Vec<PathBuf> {
 }
 
 /// Extract path dependencies from Cargo.toml.
-fn get_path_dependencies(manifest: &toml::Value, crate_root: &Path) -> Vec<(String, PathBuf)> {
+fn get_path_dependencies(
+    manifest: &toml::Value,
+    crate_root: &Path,
+) -> Vec<(String, PathBuf)> {
     let mut deps = Vec::new();
 
     // Check [dependencies], [dev-dependencies], [build-dependencies]
-    for section in &["dependencies", "dev-dependencies", "build-dependencies"] {
-        if let Some(deps_table) = manifest.get(section).and_then(|d| d.as_table()) {
+    for section in &["dependencies", "dev-dependencies", "build-dependencies"]
+    {
+        if let Some(deps_table) =
+            manifest.get(section).and_then(|d| d.as_table())
+        {
             for (name, value) in deps_table {
                 if let Some(path) = extract_path_from_dep(value) {
                     let full_path = crate_root.join(path);
@@ -337,8 +350,12 @@ fn get_path_dependencies(manifest: &toml::Value, crate_root: &Path) -> Vec<(Stri
     // Check [target.'cfg(...)'.dependencies]
     if let Some(targets) = manifest.get("target").and_then(|t| t.as_table()) {
         for (_target_cfg, target_manifest) in targets {
-            for section in &["dependencies", "dev-dependencies", "build-dependencies"] {
-                if let Some(deps_table) = target_manifest.get(section).and_then(|d| d.as_table()) {
+            for section in
+                &["dependencies", "dev-dependencies", "build-dependencies"]
+            {
+                if let Some(deps_table) =
+                    target_manifest.get(section).and_then(|d| d.as_table())
+                {
                     for (name, value) in deps_table {
                         if let Some(path) = extract_path_from_dep(value) {
                             let full_path = crate_root.join(path);
@@ -444,7 +461,8 @@ version = "0.1.0"
         let workspace = CargoWorkspace::discover(root).unwrap();
         assert_eq!(workspace.members.len(), 2);
 
-        let names: Vec<_> = workspace.members.iter().map(|c| c.name.as_str()).collect();
+        let names: Vec<_> =
+            workspace.members.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"crate-a"));
         assert!(names.contains(&"crate-b"));
     }
@@ -515,11 +533,7 @@ path = "src/my_lib.rs"
         let crate_info = &workspace.members[0];
 
         assert!(crate_info.lib_path.is_some());
-        assert!(crate_info
-            .lib_path
-            .as_ref()
-            .unwrap()
-            .ends_with("my_lib.rs"));
+        assert!(crate_info.lib_path.as_ref().unwrap().ends_with("my_lib.rs"));
     }
 
     #[test]
@@ -559,7 +573,8 @@ version = "0.1.0"
         let workspace = CargoWorkspace::discover(root).unwrap();
         assert_eq!(workspace.members.len(), 3);
 
-        let names: Vec<_> = workspace.members.iter().map(|c| c.name.as_str()).collect();
+        let names: Vec<_> =
+            workspace.members.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"foo"));
         assert!(names.contains(&"bar"));
         assert!(names.contains(&"baz"));

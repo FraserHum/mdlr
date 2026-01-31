@@ -84,13 +84,17 @@ impl TagMetrics {
         };
 
         // Build namespace distributions
-        let mut namespace_distribution: HashMap<String, usize> = HashMap::new();
-        let mut namespace_values: HashMap<String, HashMap<String, usize>> = HashMap::new();
+        let mut namespace_distribution: HashMap<String, usize> =
+            HashMap::new();
+        let mut namespace_values: HashMap<String, HashMap<String, usize>> =
+            HashMap::new();
 
         for unit in &graph.units {
             for tag in tags.get_tags(&unit.id) {
                 if let Some((namespace, value)) = tag.split_once(':') {
-                    *namespace_distribution.entry(namespace.to_string()).or_insert(0) += 1;
+                    *namespace_distribution
+                        .entry(namespace.to_string())
+                        .or_insert(0) += 1;
 
                     let values = namespace_values
                         .entry(namespace.to_string())
@@ -156,7 +160,8 @@ impl ConceptualMetrics {
             .iter()
             .map(|(tag, units)| {
                 let unit_count = units.len();
-                let file_count = tag_files.get(tag).map(|f| f.len()).unwrap_or(0);
+                let file_count =
+                    tag_files.get(tag).map(|f| f.len()).unwrap_or(0);
                 let scatter_ratio = if unit_count > 0 {
                     file_count as f64 / unit_count as f64
                 } else {
@@ -182,22 +187,14 @@ impl ConceptualMetrics {
         // 3. Cross-Concept Edges
         let cross_concept_edges = compute_cross_concept_edges(graph, tags);
 
-        Self {
-            conceptual_fan_out,
-            concept_scattering,
-            cross_concept_edges,
-        }
+        Self { conceptual_fan_out, concept_scattering, cross_concept_edges }
     }
 }
 
 impl FanDistribution {
     fn from_counts(counts: HashMap<String, usize>) -> Self {
         if counts.is_empty() {
-            return Self {
-                max: 0,
-                mean: 0.0,
-                top: vec![],
-            };
+            return Self { max: 0, mean: 0.0, top: vec![] };
         }
 
         let max = counts.values().copied().max().unwrap_or(0);
@@ -212,7 +209,10 @@ impl FanDistribution {
     }
 }
 
-fn compute_cross_concept_edges(graph: &Graph, tags: &SemanticTags) -> CrossConceptEdges {
+fn compute_cross_concept_edges(
+    graph: &Graph,
+    tags: &SemanticTags,
+) -> CrossConceptEdges {
     // Build unit_id -> tags lookup
     let unit_tags: HashMap<String, Vec<String>> = graph
         .units
@@ -222,11 +222,14 @@ fn compute_cross_concept_edges(graph: &Graph, tags: &SemanticTags) -> CrossConce
 
     let mut total_tagged_edges = 0;
     let mut cross_concept_count = 0;
-    let mut by_namespace: HashMap<String, HashMap<(String, String), usize>> = HashMap::new();
+    let mut by_namespace: HashMap<String, HashMap<(String, String), usize>> =
+        HashMap::new();
 
     for edge in &graph.edges {
-        let from_tags = unit_tags.get(&edge.from).map(|t| t.as_slice()).unwrap_or(&[]);
-        let to_tags = unit_tags.get(&edge.to).map(|t| t.as_slice()).unwrap_or(&[]);
+        let from_tags =
+            unit_tags.get(&edge.from).map(|t| t.as_slice()).unwrap_or(&[]);
+        let to_tags =
+            unit_tags.get(&edge.to).map(|t| t.as_slice()).unwrap_or(&[]);
 
         // Skip edges where neither unit is tagged
         if from_tags.is_empty() && to_tags.is_empty() {
@@ -244,7 +247,9 @@ fn compute_cross_concept_edges(graph: &Graph, tags: &SemanticTags) -> CrossConce
                         if from_ns == to_ns && from_val != to_val {
                             cross_concept_count += 1;
 
-                            let ns_map = by_namespace.entry(from_ns.to_string()).or_default();
+                            let ns_map = by_namespace
+                                .entry(from_ns.to_string())
+                                .or_default();
                             let key = if from_val < to_val {
                                 (from_val.to_string(), to_val.to_string())
                             } else {
@@ -265,17 +270,18 @@ fn compute_cross_concept_edges(graph: &Graph, tags: &SemanticTags) -> CrossConce
     };
 
     // Convert by_namespace to sorted vec format
-    let by_namespace: HashMap<String, Vec<(String, String, usize)>> = by_namespace
-        .into_iter()
-        .map(|(ns, pairs)| {
-            let mut pairs_vec: Vec<_> = pairs
-                .into_iter()
-                .map(|((a, b), count)| (a, b, count))
-                .collect();
-            pairs_vec.sort_by(|a, b| b.2.cmp(&a.2));
-            (ns, pairs_vec)
-        })
-        .collect();
+    let by_namespace: HashMap<String, Vec<(String, String, usize)>> =
+        by_namespace
+            .into_iter()
+            .map(|(ns, pairs)| {
+                let mut pairs_vec: Vec<_> = pairs
+                    .into_iter()
+                    .map(|((a, b), count)| (a, b, count))
+                    .collect();
+                pairs_vec.sort_by(|a, b| b.2.cmp(&a.2));
+                (ns, pairs_vec)
+            })
+            .collect();
 
     CrossConceptEdges {
         total_tagged_edges,
@@ -302,7 +308,8 @@ impl std::fmt::Display for TagMetrics {
             writeln!(f)?;
             writeln!(f, "By Namespace:")?;
 
-            let mut namespaces: Vec<_> = self.namespace_distribution.iter().collect();
+            let mut namespaces: Vec<_> =
+                self.namespace_distribution.iter().collect();
             namespaces.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
 
             for (namespace, count) in namespaces {
@@ -310,10 +317,16 @@ impl std::fmt::Display for TagMetrics {
 
                 if let Some(values) = self.namespace_values.get(namespace) {
                     let mut values_vec: Vec<_> = values.iter().collect();
-                    values_vec.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+                    values_vec.sort_by(|a, b| {
+                        b.1.cmp(a.1).then_with(|| a.0.cmp(b.0))
+                    });
 
                     for (value, vcount) in values_vec.iter().take(5) {
-                        writeln!(f, "    {}:{} ({})", namespace, value, vcount)?;
+                        writeln!(
+                            f,
+                            "    {}:{} ({})",
+                            namespace, value, vcount
+                        )?;
                     }
                 }
             }
@@ -371,7 +384,10 @@ impl std::fmt::Display for ConceptualMetrics {
                 writeln!(
                     f,
                     "  {} - {} units across {} files (ratio: {:.2})",
-                    scatter.tag, scatter.unit_count, scatter.file_count, scatter.scatter_ratio
+                    scatter.tag,
+                    scatter.unit_count,
+                    scatter.file_count,
+                    scatter.scatter_ratio
                 )?;
             }
             writeln!(f)?;
@@ -393,7 +409,11 @@ impl std::fmt::Display for ConceptualMetrics {
                     writeln!(f)?;
                     writeln!(f, "  {}:", namespace)?;
                     for (from, to, count) in pairs.iter().take(5) {
-                        writeln!(f, "    {} <-> {} ({} edges)", from, to, count)?;
+                        writeln!(
+                            f,
+                            "    {} <-> {} ({} edges)",
+                            from, to, count
+                        )?;
                     }
                 }
             }

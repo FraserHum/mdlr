@@ -30,13 +30,18 @@
 //! - No const evaluation: `include!()` and similar won't work
 //! - Glob imports are best-effort
 
+mod call_resolution;
 mod cargo;
+mod import_resolution;
+mod item_extraction;
 mod modules;
 mod resolve;
 mod uses;
 
 // Re-export main types
 pub use cargo::{CargoWorkspace, CrateInfo};
-pub use modules::{ItemDef, ItemKind, ItemSpan, ModuleGraph, ModuleNode, ModulePath};
+pub use modules::{
+    ItemDef, ItemKind, ItemSpan, ModuleGraph, ModuleNode, ModulePath,
+};
 pub use resolve::{ResolutionContext, ResolvedPath};
 pub use uses::{UseKind, UseStatement, Visibility};

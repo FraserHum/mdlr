@@ -9,9 +9,7 @@ pub struct SourceWalker {
 
 impl SourceWalker {
     pub fn new(root: &Path) -> Self {
-        Self {
-            root: root.to_path_buf(),
-        }
+        Self { root: root.to_path_buf() }
     }
 
     /// Walk the source tree, yielding paths to supported source files.
@@ -25,12 +23,11 @@ impl SourceWalker {
             .build()
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
-                entry
-                    .file_type()
-                    .map(|ft| ft.is_file())
-                    .unwrap_or(false)
+                entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
             })
-            .filter(move |entry| has_supported_extension(entry.path(), extensions))
+            .filter(move |entry| {
+                has_supported_extension(entry.path(), extensions)
+            })
             .map(|entry| entry.into_path())
     }
 }

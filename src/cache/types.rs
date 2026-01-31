@@ -1,5 +1,5 @@
 use crate::graph::Unit;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -31,11 +31,7 @@ pub struct ProjectIndex {
 
 impl Default for ProjectIndex {
     fn default() -> Self {
-        Self {
-            version: 1,
-            files: HashMap::new(),
-            last_scan: 0,
-        }
+        Self { version: 1, files: HashMap::new(), last_scan: 0 }
     }
 }
 
@@ -49,10 +45,7 @@ pub struct SemanticTags {
 
 impl SemanticTags {
     pub fn new() -> Self {
-        Self {
-            version: 1,
-            tags: HashMap::new(),
-        }
+        Self { version: 1, tags: HashMap::new() }
     }
 
     /// Add a tag to a unit. Validates the tag format (namespace:value).
@@ -129,9 +122,9 @@ impl SemanticTags {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StagedTags {
     pub version: u32,
-    pub additions: HashMap<String, Vec<String>>,  // unit_id -> tags to add
-    pub removals: HashMap<String, Vec<String>>,   // unit_id -> tags to remove
-    pub clears: Vec<String>,                       // unit_ids to clear all tags from
+    pub additions: HashMap<String, Vec<String>>, // unit_id -> tags to add
+    pub removals: HashMap<String, Vec<String>>,  // unit_id -> tags to remove
+    pub clears: Vec<String>, // unit_ids to clear all tags from
 }
 
 impl StagedTags {
@@ -146,7 +139,9 @@ impl StagedTags {
 
     /// Check if there are any staged changes.
     pub fn is_empty(&self) -> bool {
-        self.additions.is_empty() && self.removals.is_empty() && self.clears.is_empty()
+        self.additions.is_empty()
+            && self.removals.is_empty()
+            && self.clears.is_empty()
     }
 
     /// Stage a tag addition.
@@ -206,10 +201,16 @@ impl StagedTags {
 pub fn validate_tag(tag: &str) -> Result<()> {
     let parts: Vec<&str> = tag.split(':').collect();
     if parts.len() != 2 {
-        bail!("Invalid tag format '{}': must be 'namespace:value' (exactly one colon)", tag);
+        bail!(
+            "Invalid tag format '{}': must be 'namespace:value' (exactly one colon)",
+            tag
+        );
     }
     if parts[0].is_empty() || parts[1].is_empty() {
-        bail!("Invalid tag format '{}': namespace and value must not be empty", tag);
+        bail!(
+            "Invalid tag format '{}': namespace and value must not be empty",
+            tag
+        );
     }
     Ok(())
 }

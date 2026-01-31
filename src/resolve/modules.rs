@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use tree_sitter::{Node, Parser};
 
+use super::item_extraction::{
+    extract_impl_item, extract_item_def, extract_use_declaration,
+    extract_visibility, item_kind_from_node, node_span, node_text,
+};
 use super::uses::{UseStatement, Visibility};
 
 /// A module path as a sequence of segments.
@@ -93,22 +97,27 @@ impl ModuleGraph {
     }
 
     /// Recursively build a module and its children.
-    fn build_module(&mut self, module_path: &ModulePath, file_path: &Path) -> Result<()> {
+    fn build_module(
+        &mut self,
+        module_path: &ModulePath,
+        file_path: &Path,
+    ) -> Result<()> {
         // Skip if already processed
         if self.modules.contains_key(module_path) {
             return Ok(());
         }
 
         // Parse the file
-        let source = std::fs::read_to_string(file_path)
-            .with_context(|| format!("Failed to read {}", file_path.display()))?;
+        let source =
+            std::fs::read_to_string(file_path).with_context(|| {
+                format!("Failed to read {}", file_path.display())
+            })?;
 
         let mut parser = Parser::new();
         parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;
 
-        let tree = parser
-            .parse(&source, None)
-            .context("Failed to parse source")?;
+        let tree =
+            parser.parse(&source, None).context("Failed to parse source")?;
 
         // Extract module information
         let mut node = ModuleNode {
@@ -119,7 +128,12 @@ impl ModuleGraph {
             reexports: Vec::new(),
         };
 
-        self.extract_module_info(tree.root_node(), &source, file_path, &mut node)?;
+        self.extract_module_info(
+            tree.root_node(),
+            &source,
+            file_path,
+            &mut node,
+        )?;
 
         // Collect child module names before inserting
         let children: Vec<String> = node.children.clone();
@@ -136,7 +150,9 @@ impl ModuleGraph {
                 .collect();
 
             // Resolve the child module's file path
-            if let Some(child_file) = resolve_module_file(file_path, &child_name) {
+            if let Some(child_file) =
+                resolve_module_file(file_path, &child_name)
+            {
                 self.build_module(&child_path, &child_file)?;
             }
         }
@@ -155,112 +171,55 @@ impl ModuleGraph {
         let mut cursor = node.walk();
 
         for child in node.children(&mut cursor) {
-            match child.kind() {
-                "function_item" => {
-                    if let Some(item) = extract_item_def(child, source, ItemKind::Function) {
-                        module.items.push(item);
-                    }
+            if let Some(kind) = item_kind_from_node(child.kind()) {
+                if let Some(item) = extract_item_def(child, source, kind) {
+                    module.items.push(item);
                 }
-                "struct_item" => {
-                    if let Some(item) = extract_item_def(child, source, ItemKind::Struct) {
-                        module.items.push(item);
+            } else {
+                match child.kind() {
+                    "impl_item" => extract_impl_item(child, source, module),
+                    "mod_item" => self
+                        .extract_mod_item(child, source, file_path, module)?,
+                    "use_declaration" => {
+                        extract_use_declaration(child, source, module)
                     }
+                    _ => {}
                 }
-                "enum_item" => {
-                    if let Some(item) = extract_item_def(child, source, ItemKind::Enum) {
-                        module.items.push(item);
-                    }
-                }
-                "trait_item" => {
-                    if let Some(item) = extract_item_def(child, source, ItemKind::Trait) {
-                        module.items.push(item);
-                    }
-                }
-                "impl_item" => {
-                    // Impl blocks don't have a simple name, handle specially
-                    if let Some(type_node) = child.child_by_field_name("type") {
-                        let type_name = node_text(type_node, source);
-                        module.items.push(ItemDef {
-                            name: format!("impl {}", type_name),
-                            kind: ItemKind::Impl,
-                            visibility: Visibility::Private, // impls are always effectively pub
-                            span: node_span(child),
-                        });
-                    }
-                }
-                "const_item" => {
-                    if let Some(item) = extract_item_def(child, source, ItemKind::Const) {
-                        module.items.push(item);
-                    }
-                }
-                "static_item" => {
-                    if let Some(item) = extract_item_def(child, source, ItemKind::Static) {
-                        module.items.push(item);
-                    }
-                }
-                "type_item" => {
-                    if let Some(item) = extract_item_def(child, source, ItemKind::TypeAlias) {
-                        module.items.push(item);
-                    }
-                }
-                "macro_definition" => {
-                    if let Some(item) = extract_item_def(child, source, ItemKind::Macro) {
-                        module.items.push(item);
-                    }
-                }
-                "mod_item" => {
-                    // Check if this is an inline module or a file module
-                    if let Some(name_node) = child.child_by_field_name("name") {
-                        let mod_name = node_text(name_node, source);
-
-                        // Check for #[path = "..."] attribute
-                        let custom_path = get_path_attribute(child, source);
-
-                        // Check if it has a body (inline module)
-                        let has_body = child.child_by_field_name("body").is_some();
-
-                        if has_body {
-                            // Inline module - extract recursively
-                            if let Some(body) = child.child_by_field_name("body") {
-                                self.extract_module_info(body, source, file_path, module)?;
-                            }
-                        } else {
-                            // External module - add to children to be resolved later
-                            // Store custom path info if present
-                            if custom_path.is_some() {
-                                // For now, we handle custom paths in resolve_module_file
-                                // This could be extended to store the attribute
-                            }
-                            module.children.push(mod_name.clone());
-                        }
-
-                        // Also add as an item
-                        module.items.push(ItemDef {
-                            name: mod_name,
-                            kind: ItemKind::Module,
-                            visibility: extract_visibility(child, source),
-                            span: node_span(child),
-                        });
-                    }
-                }
-                "use_declaration" => {
-                    let visibility = extract_visibility(child, source);
-                    let uses = super::uses::extract_use_statement(child, source);
-
-                    for use_stmt in uses {
-                        if visibility == Visibility::Public {
-                            module.reexports.push(UseStatement {
-                                visibility: visibility.clone(),
-                                ..use_stmt
-                            });
-                        } else {
-                            module.uses.push(use_stmt);
-                        }
-                    }
-                }
-                _ => {}
             }
         }
+
+        Ok(())
+    }
+
+    /// Extract a mod_item node into the module.
+    fn extract_mod_item(
+        &self,
+        child: Node,
+        source: &str,
+        file_path: &Path,
+        module: &mut ModuleNode,
+    ) -> Result<()> {
+        let Some(name_node) = child.child_by_field_name("name") else {
+            return Ok(());
+        };
+        let mod_name = node_text(name_node, source);
+
+        // Check if it has a body (inline module)
+        if let Some(body) = child.child_by_field_name("body") {
+            // Inline module - extract recursively
+            self.extract_module_info(body, source, file_path, module)?;
+        } else {
+            // External module - add to children to be resolved later
+            module.children.push(mod_name.clone());
+        }
+
+        // Also add as an item
+        module.items.push(ItemDef {
+            name: mod_name,
+            kind: ItemKind::Module,
+            visibility: extract_visibility(child, source),
+            span: node_span(child),
+        });
 
         Ok(())
     }
@@ -271,7 +230,11 @@ impl ModuleGraph {
     }
 
     /// Find an item by name within a module.
-    pub fn find_item(&self, module_path: &ModulePath, name: &str) -> Option<&ItemDef> {
+    pub fn find_item(
+        &self,
+        module_path: &ModulePath,
+        name: &str,
+    ) -> Option<&ItemDef> {
         self.modules
             .get(module_path)?
             .items
@@ -291,7 +254,8 @@ impl ModuleGraph {
         let module = self.modules.get(module_path)?;
 
         // First check direct items
-        if let Some(item) = module.items.iter().find(|item| item.name == name) {
+        if let Some(item) = module.items.iter().find(|item| item.name == name)
+        {
             return Some((module_path.clone(), item));
         }
 
@@ -303,7 +267,9 @@ impl ModuleGraph {
                     // reexport.segments is like ["types", "Unit"]
                     // We need to resolve this relative to the current module
                     let mut target_module = module_path.clone();
-                    for segment in &reexport.segments[..reexport.segments.len().saturating_sub(1)] {
+                    for segment in &reexport.segments
+                        [..reexport.segments.len().saturating_sub(1)]
+                    {
                         target_module.push(segment.clone());
                     }
 
@@ -318,7 +284,10 @@ impl ModuleGraph {
     }
 
     /// Get all items visible from a module (including re-exports).
-    pub fn visible_items<'a>(&'a self, module_path: &'a ModulePath) -> Vec<(&'a ModulePath, &'a ItemDef)> {
+    pub fn visible_items<'a>(
+        &'a self,
+        module_path: &'a ModulePath,
+    ) -> Vec<(&'a ModulePath, &'a ItemDef)> {
         let mut items = Vec::new();
 
         if let Some(module) = self.modules.get(module_path) {
@@ -331,7 +300,11 @@ impl ModuleGraph {
     }
 
     /// Get the full path to an item given a module path and item name.
-    pub fn item_path(&self, module_path: &ModulePath, name: &str) -> Option<ModulePath> {
+    pub fn item_path(
+        &self,
+        module_path: &ModulePath,
+        name: &str,
+    ) -> Option<ModulePath> {
         self.find_item(module_path, name)?;
         let mut path = module_path.clone();
         path.push(name.to_string());
@@ -367,7 +340,10 @@ fn resolve_module_file(parent_file: &Path, mod_name: &str) -> Option<PathBuf> {
     let parent_stem = parent_file.file_stem()?.to_str()?;
 
     // Determine the base directory for looking up the module
-    let base_dir = if parent_stem == "mod" || parent_stem == "lib" || parent_stem == "main" {
+    let base_dir = if parent_stem == "mod"
+        || parent_stem == "lib"
+        || parent_stem == "main"
+    {
         parent_dir.to_path_buf()
     } else {
         // For a file like foo.rs, look in foo/ directory
@@ -387,72 +363,6 @@ fn resolve_module_file(parent_file: &Path, mod_name: &str) -> Option<PathBuf> {
     }
 
     None
-}
-
-/// Extract an item definition from a tree-sitter node.
-fn extract_item_def(node: Node, source: &str, kind: ItemKind) -> Option<ItemDef> {
-    let name_node = node.child_by_field_name("name")?;
-    let name = node_text(name_node, source);
-    let visibility = extract_visibility(node, source);
-
-    Some(ItemDef {
-        name,
-        kind,
-        visibility,
-        span: node_span(node),
-    })
-}
-
-/// Extract visibility from a node (looks for visibility_modifier child).
-fn extract_visibility(node: Node, source: &str) -> Visibility {
-    for child in node.children(&mut node.walk()) {
-        if child.kind() == "visibility_modifier" {
-            let text = node_text(child, source);
-            return match text.as_str() {
-                "pub" => Visibility::Public,
-                s if s.starts_with("pub(crate)") => Visibility::PubCrate,
-                s if s.starts_with("pub(super)") => Visibility::PubSuper,
-                s if s.starts_with("pub(in") => Visibility::PubIn(
-                    s.trim_start_matches("pub(in ")
-                        .trim_end_matches(')')
-                        .to_string(),
-                ),
-                _ => Visibility::Public,
-            };
-        }
-    }
-    Visibility::Private
-}
-
-/// Get the #[path = "..."] attribute if present.
-fn get_path_attribute(node: Node, source: &str) -> Option<String> {
-    for child in node.children(&mut node.walk()) {
-        if child.kind() == "attribute_item" {
-            let text = node_text(child, source);
-            if text.starts_with("#[path") {
-                // Extract the path value
-                if let Some(start) = text.find('"') {
-                    if let Some(end) = text.rfind('"') {
-                        if start < end {
-                            return Some(text[start + 1..end].to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-fn node_text(node: Node, source: &str) -> String {
-    source[node.byte_range()].to_string()
-}
-
-fn node_span(node: Node) -> ItemSpan {
-    ItemSpan {
-        start_line: node.start_position().row + 1,
-        end_line: node.end_position().row + 1,
-    }
 }
 
 #[cfg(test)]
@@ -490,7 +400,8 @@ struct PrivateStruct;
 
         assert_eq!(graph.crate_name, "test_crate");
 
-        let root_module = graph.get_module(&vec!["crate".to_string()]).unwrap();
+        let root_module =
+            graph.get_module(&vec!["crate".to_string()]).unwrap();
         assert_eq!(root_module.items.len(), 4);
 
         assert!(root_module.has_item("public_fn"));
@@ -539,7 +450,8 @@ pub fn bar_fn() {}
         let graph = ModuleGraph::build("test_crate", &lib_path).unwrap();
 
         // Check root module has children
-        let root_module = graph.get_module(&vec!["crate".to_string()]).unwrap();
+        let root_module =
+            graph.get_module(&vec!["crate".to_string()]).unwrap();
         assert!(root_module.children.contains(&"foo".to_string()));
         assert!(root_module.children.contains(&"bar".to_string()));
 
@@ -616,7 +528,8 @@ fn private_fn() {}
         let lib_path = root.join("src/lib.rs");
         let graph = ModuleGraph::build("test_crate", &lib_path).unwrap();
 
-        let root_module = graph.get_module(&vec!["crate".to_string()]).unwrap();
+        let root_module =
+            graph.get_module(&vec!["crate".to_string()]).unwrap();
 
         assert_eq!(
             root_module.get_item("public_fn").unwrap().visibility,

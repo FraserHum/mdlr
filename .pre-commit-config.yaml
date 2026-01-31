@@ -1,0 +1,25 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-shebang-scripts-are-executable
+      - id: check-vcs-permalinks
+      - id: check-yaml
+      - id: destroyed-symlinks
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: fix-byte-order-marker
+      - id: mixed-line-ending
+      - id: trailing-whitespace
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        description: Format Rust code according to style guidelines.
+        language: rust
+        files: \.rs$
+        pass_filenames: false
+        entry: cargo fmt
+        args: ["--all"]

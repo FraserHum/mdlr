@@ -1,5 +1,5 @@
-use crate::config::{Bucket, Config, DisplayMode};
 use super::StructuralMetrics;
+use crate::config::{Bucket, Config, DisplayMode};
 use serde::Serialize;
 
 /// A metric value with its evaluated bucket
@@ -53,7 +53,9 @@ impl BucketedMetrics {
             fan_out: BucketedFanMetrics {
                 max: BucketedValue::new(
                     metrics.fan_out.max as f64,
-                    thresholds.fan_out_max.evaluate(metrics.fan_out.max as f64),
+                    thresholds
+                        .fan_out_max
+                        .evaluate(metrics.fan_out.max as f64),
                 ),
                 mean: BucketedValue::new(
                     metrics.fan_out.mean,
@@ -65,7 +67,11 @@ impl BucketedMetrics {
 }
 
 /// Formats a bucketed value according to display mode
-fn format_value(value: &BucketedValue, config: &Config, is_integer: bool) -> String {
+fn format_value(
+    value: &BucketedValue,
+    config: &Config,
+    is_integer: bool,
+) -> String {
     match config.display.mode {
         DisplayMode::Value => {
             if is_integer {
@@ -91,7 +97,10 @@ fn format_fan_metric(fan: &BucketedFanMetrics, config: &Config) -> String {
     let mean_str = format_value(&fan.mean, config, false);
 
     match config.display.mode {
-        DisplayMode::Value => format!("max={}, mean={:.2}", fan.max.value as usize, fan.mean.value),
+        DisplayMode::Value => format!(
+            "max={}, mean={:.2}",
+            fan.max.value as usize, fan.mean.value
+        ),
         DisplayMode::Label => format!("max={}, mean={}", max_str, mean_str),
         DisplayMode::Both => format!("max={}, mean={}", max_str, mean_str),
     }
@@ -107,11 +116,7 @@ pub struct MetricsDisplay<'a> {
 impl<'a> MetricsDisplay<'a> {
     pub fn new(metrics: &'a StructuralMetrics, config: &'a Config) -> Self {
         let bucketed = BucketedMetrics::from_metrics(metrics, config);
-        Self {
-            metrics,
-            bucketed,
-            config,
-        }
+        Self { metrics, bucketed, config }
     }
 }
 
@@ -121,19 +126,23 @@ impl std::fmt::Display for MetricsDisplay<'_> {
         writeln!(f, "==================")?;
         writeln!(f)?;
 
-        let dag_str = format_value(&self.bucketed.dag_density, self.config, false);
+        let dag_str =
+            format_value(&self.bucketed.dag_density, self.config, false);
         writeln!(f, "DAG Density: {}", dag_str)?;
         writeln!(f)?;
 
         let fan_in_str = format_fan_metric(&self.bucketed.fan_in, self.config);
-        let fan_out_str = format_fan_metric(&self.bucketed.fan_out, self.config);
+        let fan_out_str =
+            format_fan_metric(&self.bucketed.fan_out, self.config);
         writeln!(f, "Fan-In:  {}", fan_in_str)?;
         writeln!(f, "Fan-Out: {}", fan_out_str)?;
 
         if !self.metrics.fan_out.distribution.is_empty() {
             writeln!(f)?;
             writeln!(f, "Top Fan-Out:")?;
-            for (name, count) in self.metrics.fan_out.distribution.iter().take(10) {
+            for (name, count) in
+                self.metrics.fan_out.distribution.iter().take(10)
+            {
                 if *count > 0 {
                     writeln!(f, "  {} ({})", name, count)?;
                 }
@@ -143,7 +152,9 @@ impl std::fmt::Display for MetricsDisplay<'_> {
         if !self.metrics.fan_in.distribution.is_empty() {
             writeln!(f)?;
             writeln!(f, "Top Fan-In:")?;
-            for (name, count) in self.metrics.fan_in.distribution.iter().take(10) {
+            for (name, count) in
+                self.metrics.fan_in.distribution.iter().take(10)
+            {
                 if *count > 0 {
                     writeln!(f, "  {} ({})", name, count)?;
                 }
@@ -163,16 +174,8 @@ mod tests {
     fn make_test_metrics() -> StructuralMetrics {
         StructuralMetrics {
             dag_density: 0.419,
-            fan_in: FanMetrics {
-                max: 4,
-                mean: 0.43,
-                distribution: vec![],
-            },
-            fan_out: FanMetrics {
-                max: 6,
-                mean: 0.43,
-                distribution: vec![],
-            },
+            fan_in: FanMetrics { max: 4, mean: 0.43, distribution: vec![] },
+            fan_out: FanMetrics { max: 6, mean: 0.43, distribution: vec![] },
         }
     }
 
@@ -197,8 +200,12 @@ mod tests {
         let output = format!("{}", display);
 
         assert!(output.contains("DAG Density: 0.419 (excellent)"));
-        assert!(output.contains("Fan-In:  max=4 (good), mean=0.430 (excellent)"));
-        assert!(output.contains("Fan-Out: max=6 (fair), mean=0.430 (excellent)"));
+        assert!(
+            output.contains("Fan-In:  max=4 (good), mean=0.430 (excellent)")
+        );
+        assert!(
+            output.contains("Fan-Out: max=6 (fair), mean=0.430 (excellent)")
+        );
     }
 
     #[test]
@@ -224,5 +231,4 @@ mod tests {
         assert!(output.contains("DAG Density: excellent"));
         assert!(output.contains("Fan-In:  max=good, mean=excellent"));
     }
-
 }

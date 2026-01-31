@@ -44,9 +44,7 @@ pub fn load_from_dir(start_dir: &Path) -> Result<Config> {
 
 /// Returns the path where config was found, if any
 pub fn find_config_path() -> Option<PathBuf> {
-    env::current_dir()
-        .ok()
-        .and_then(|dir| find_config_file(&dir))
+    env::current_dir().ok().and_then(|dir| find_config_file(&dir))
 }
 
 #[cfg(test)]

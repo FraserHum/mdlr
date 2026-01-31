@@ -80,7 +80,9 @@ impl UseStatement {
 
     /// Check if this is an external crate import.
     pub fn is_external(&self) -> bool {
-        !self.is_crate_relative() && !self.is_self_relative() && !self.is_super_relative()
+        !self.is_crate_relative()
+            && !self.is_self_relative()
+            && !self.is_super_relative()
     }
 }
 
@@ -95,104 +97,25 @@ pub fn extract_use_statement(node: Node, source: &str) -> Vec<UseStatement> {
 }
 
 /// Recursively extract use statements from a use tree.
-fn extract_use_tree(node: Node, source: &str, prefix: &[String], uses: &mut Vec<UseStatement>) {
+pub fn extract_use_tree(
+    node: Node,
+    source: &str,
+    prefix: &[String],
+    uses: &mut Vec<UseStatement>,
+) {
     match node.kind() {
         "use_declaration" => {
-            // Find the use tree (argument) in the declaration
-            for child in node.children(&mut node.walk()) {
-                if child.kind() != "visibility_modifier" && child.kind() != "use" {
-                    extract_use_tree(child, source, prefix, uses);
-                }
-            }
+            extract_use_declaration_children(node, source, prefix, uses)
         }
         "scoped_identifier" | "identifier" => {
-            // A simple path like `foo::bar` or just `foo`
-            let path = parse_path(node, source);
-            let full_path: Vec<String> = prefix.iter().cloned().chain(path).collect();
-
-            uses.push(UseStatement {
-                segments: full_path,
-                kind: UseKind::Single,
-                alias: None,
-                visibility: Visibility::Private,
-            });
+            extract_simple_path(node, source, prefix, uses)
         }
-        "use_as_clause" => {
-            // `foo::Bar as Baz`
-            if let Some(path_node) = node.child_by_field_name("path") {
-                let path = parse_path(path_node, source);
-                let full_path: Vec<String> = prefix.iter().cloned().chain(path).collect();
-
-                let alias = node
-                    .child_by_field_name("alias")
-                    .map(|n| node_text(n, source));
-
-                uses.push(UseStatement {
-                    segments: full_path,
-                    kind: UseKind::Single,
-                    alias,
-                    visibility: Visibility::Private,
-                });
-            }
-        }
-        "use_wildcard" => {
-            // `foo::*` - extract the path prefix before the wildcard
-            let path = if let Some(path_node) = node.child_by_field_name("path") {
-                parse_path(path_node, source)
-            } else {
-                // No path field, look for scoped_identifier/identifier child
-                let mut found_path = vec![];
-                for child in node.children(&mut node.walk()) {
-                    if child.kind() == "scoped_identifier" || child.kind() == "identifier" {
-                        found_path = parse_path(child, source);
-                        break;
-                    }
-                }
-                found_path
-            };
-            let full_path: Vec<String> = prefix.iter().cloned().chain(path).collect();
-
-            uses.push(UseStatement {
-                segments: full_path,
-                kind: UseKind::Glob,
-                alias: None,
-                visibility: Visibility::Private,
-            });
-        }
+        "use_as_clause" => extract_use_as_clause(node, source, prefix, uses),
+        "use_wildcard" => extract_use_wildcard(node, source, prefix, uses),
         "scoped_use_list" => {
-            // `foo::{bar, baz}`
-            // First get the path prefix
-            if let Some(path_node) = node.child_by_field_name("path") {
-                let path = parse_path(path_node, source);
-                let new_prefix: Vec<String> = prefix.iter().cloned().chain(path).collect();
-
-                // Then process the list
-                if let Some(list) = node.child_by_field_name("list") {
-                    extract_use_tree(list, source, &new_prefix, uses);
-                }
-            }
+            extract_scoped_use_list(node, source, prefix, uses)
         }
-        "use_list" => {
-            // `{bar, baz}` - inside a scoped_use_list
-            for child in node.children(&mut node.walk()) {
-                match child.kind() {
-                    "identifier" | "scoped_identifier" | "use_as_clause" | "scoped_use_list"
-                    | "use_wildcard" => {
-                        extract_use_tree(child, source, prefix, uses);
-                    }
-                    "self" => {
-                        // `use foo::{self}` imports the module itself
-                        uses.push(UseStatement {
-                            segments: prefix.to_vec(),
-                            kind: UseKind::SelfImport,
-                            alias: None,
-                            visibility: Visibility::Private,
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
+        "use_list" => extract_use_list(node, source, prefix, uses),
         _ => {
             // Recurse into unknown nodes
             for child in node.children(&mut node.walk()) {
@@ -200,6 +123,147 @@ fn extract_use_tree(node: Node, source: &str, prefix: &[String], uses: &mut Vec<
             }
         }
     }
+}
+
+/// Extract children from a use_declaration node.
+fn extract_use_declaration_children(
+    node: Node,
+    source: &str,
+    prefix: &[String],
+    uses: &mut Vec<UseStatement>,
+) {
+    for child in node.children(&mut node.walk()) {
+        if child.kind() != "visibility_modifier" && child.kind() != "use" {
+            extract_use_tree(child, source, prefix, uses);
+        }
+    }
+}
+
+/// Extract a simple path like `foo::bar` or just `foo`.
+fn extract_simple_path(
+    node: Node,
+    source: &str,
+    prefix: &[String],
+    uses: &mut Vec<UseStatement>,
+) {
+    let path = parse_path(node, source);
+    let full_path: Vec<String> = prefix.iter().cloned().chain(path).collect();
+
+    uses.push(UseStatement {
+        segments: full_path,
+        kind: UseKind::Single,
+        alias: None,
+        visibility: Visibility::Private,
+    });
+}
+
+/// Extract a use_as_clause like `foo::Bar as Baz`.
+fn extract_use_as_clause(
+    node: Node,
+    source: &str,
+    prefix: &[String],
+    uses: &mut Vec<UseStatement>,
+) {
+    if let Some(path_node) = node.child_by_field_name("path") {
+        let path = parse_path(path_node, source);
+        let full_path: Vec<String> =
+            prefix.iter().cloned().chain(path).collect();
+
+        let alias =
+            node.child_by_field_name("alias").map(|n| node_text(n, source));
+
+        uses.push(UseStatement {
+            segments: full_path,
+            kind: UseKind::Single,
+            alias,
+            visibility: Visibility::Private,
+        });
+    }
+}
+
+/// Extract a use_wildcard like `foo::*`.
+fn extract_use_wildcard(
+    node: Node,
+    source: &str,
+    prefix: &[String],
+    uses: &mut Vec<UseStatement>,
+) {
+    let path = extract_wildcard_path(node, source);
+    let full_path: Vec<String> = prefix.iter().cloned().chain(path).collect();
+
+    uses.push(UseStatement {
+        segments: full_path,
+        kind: UseKind::Glob,
+        alias: None,
+        visibility: Visibility::Private,
+    });
+}
+
+/// Extract the path from a use_wildcard node.
+fn extract_wildcard_path(node: Node, source: &str) -> Vec<String> {
+    if let Some(path_node) = node.child_by_field_name("path") {
+        return parse_path(path_node, source);
+    }
+    // No path field, look for scoped_identifier/identifier child
+    for child in node.children(&mut node.walk()) {
+        if child.kind() == "scoped_identifier" || child.kind() == "identifier"
+        {
+            return parse_path(child, source);
+        }
+    }
+    vec![]
+}
+
+/// Extract a scoped_use_list like `foo::{bar, baz}`.
+fn extract_scoped_use_list(
+    node: Node,
+    source: &str,
+    prefix: &[String],
+    uses: &mut Vec<UseStatement>,
+) {
+    if let Some(path_node) = node.child_by_field_name("path") {
+        let path = parse_path(path_node, source);
+        let new_prefix: Vec<String> =
+            prefix.iter().cloned().chain(path).collect();
+
+        if let Some(list) = node.child_by_field_name("list") {
+            extract_use_tree(list, source, &new_prefix, uses);
+        }
+    }
+}
+
+/// Extract a use_list like `{bar, baz}` inside a scoped_use_list.
+fn extract_use_list(
+    node: Node,
+    source: &str,
+    prefix: &[String],
+    uses: &mut Vec<UseStatement>,
+) {
+    for child in node.children(&mut node.walk()) {
+        if is_use_list_item(child.kind()) {
+            extract_use_tree(child, source, prefix, uses);
+        } else if child.kind() == "self" {
+            // `use foo::{self}` imports the module itself
+            uses.push(UseStatement {
+                segments: prefix.to_vec(),
+                kind: UseKind::SelfImport,
+                alias: None,
+                visibility: Visibility::Private,
+            });
+        }
+    }
+}
+
+/// Check if a node kind is a valid use_list item.
+fn is_use_list_item(kind: &str) -> bool {
+    matches!(
+        kind,
+        "identifier"
+            | "scoped_identifier"
+            | "use_as_clause"
+            | "scoped_use_list"
+            | "use_wildcard"
+    )
 }
 
 /// Parse a path from an identifier or scoped_identifier node.
@@ -269,7 +333,8 @@ pub fn resolve_path_prefix(
                 return None;
             }
 
-            let mut result: Vec<String> = current_module[..current_module.len() - 1].to_vec();
+            let mut result: Vec<String> =
+                current_module[..current_module.len() - 1].to_vec();
 
             // Handle multiple super:: prefixes
             let mut i = 1;
@@ -299,9 +364,7 @@ mod tests {
 
     fn parse_use(code: &str) -> Vec<UseStatement> {
         let mut parser = Parser::new();
-        parser
-            .set_language(&tree_sitter_rust::LANGUAGE.into())
-            .unwrap();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
 
         let tree = parser.parse(code, None).unwrap();
         let root = tree.root_node();
@@ -352,7 +415,8 @@ mod tests {
 
     #[test]
     fn test_use_deeply_nested() {
-        let uses = parse_use("use std::{collections::{HashMap, HashSet}, io::Read};");
+        let uses =
+            parse_use("use std::{collections::{HashMap, HashSet}, io::Read};");
         assert_eq!(uses.len(), 3);
 
         let paths: Vec<_> = uses.iter().map(|u| u.path_string()).collect();
@@ -368,12 +432,11 @@ mod tests {
 
         let self_import = uses.iter().find(|u| u.kind == UseKind::SelfImport);
         assert!(self_import.is_some());
-        assert_eq!(
-            self_import.unwrap().segments,
-            vec!["std", "collections"]
-        );
+        assert_eq!(self_import.unwrap().segments, vec!["std", "collections"]);
 
-        let hashmap = uses.iter().find(|u| u.path_string() == "std::collections::HashMap");
+        let hashmap = uses
+            .iter()
+            .find(|u| u.path_string() == "std::collections::HashMap");
         assert!(hashmap.is_some());
     }
 
@@ -401,7 +464,8 @@ mod tests {
 
     #[test]
     fn test_resolve_crate_path() {
-        let use_path = vec!["crate".to_string(), "foo".to_string(), "Bar".to_string()];
+        let use_path =
+            vec!["crate".to_string(), "foo".to_string(), "Bar".to_string()];
         let current = vec!["crate".to_string(), "baz".to_string()];
 
         let resolved = resolve_path_prefix(&use_path, &current).unwrap();
@@ -420,7 +484,8 @@ mod tests {
     #[test]
     fn test_resolve_super_path() {
         let use_path = vec!["super".to_string(), "sibling".to_string()];
-        let current = vec!["crate".to_string(), "foo".to_string(), "bar".to_string()];
+        let current =
+            vec!["crate".to_string(), "foo".to_string(), "bar".to_string()];
 
         let resolved = resolve_path_prefix(&use_path, &current).unwrap();
         assert_eq!(resolved, vec!["crate", "foo", "sibling"]);

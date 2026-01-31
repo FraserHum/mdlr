@@ -1,4 +1,4 @@
-use super::types::{FileCacheEntry, FileMetadata, ProjectIndex, SemanticTags, StagedTags};
+use super::types::{FileCacheEntry, FileMetadata, ProjectIndex};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,8 +15,8 @@ pub struct CacheStore {
     root: PathBuf,
     cache_dir: PathBuf,
     index_path: PathBuf,
-    tags_path: PathBuf,
-    staged_tags_path: PathBuf,
+    pub(super) tags_path: PathBuf,
+    pub(super) staged_tags_path: PathBuf,
 }
 
 impl CacheStore {
@@ -29,16 +29,11 @@ impl CacheStore {
         let tags_path = mdlr_dir.join(TAGS_FILE);
         let staged_tags_path = mdlr_dir.join(STAGED_TAGS_FILE);
 
-        fs::create_dir_all(&cache_dir)
-            .with_context(|| format!("Failed to create cache directory: {:?}", cache_dir))?;
+        fs::create_dir_all(&cache_dir).with_context(|| {
+            format!("Failed to create cache directory: {:?}", cache_dir)
+        })?;
 
-        Ok(Self {
-            root,
-            cache_dir,
-            index_path,
-            tags_path,
-            staged_tags_path,
-        })
+        Ok(Self { root, cache_dir, index_path, tags_path, staged_tags_path })
     }
 
     /// Find and open a cache store by searching up from the given directory.
@@ -95,9 +90,7 @@ impl CacheStore {
     /// Convert a source file path to its corresponding cache file path.
     /// e.g., src/foo.rs -> .mdlr/cache/src/foo.json
     pub fn cache_path(&self, source: &Path) -> PathBuf {
-        let relative = source
-            .strip_prefix(&self.root)
-            .unwrap_or(source);
+        let relative = source.strip_prefix(&self.root).unwrap_or(source);
         let mut cache_file = self.cache_dir.join(relative);
         cache_file.set_extension("json");
         cache_file
@@ -110,10 +103,13 @@ impl CacheStore {
             return Ok(None);
         }
 
-        let content = fs::read_to_string(&cache_path)
-            .with_context(|| format!("Failed to read cache entry: {:?}", cache_path))?;
+        let content = fs::read_to_string(&cache_path).with_context(|| {
+            format!("Failed to read cache entry: {:?}", cache_path)
+        })?;
         let entry: FileCacheEntry = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse cache entry: {:?}", cache_path))?;
+            .with_context(|| {
+                format!("Failed to parse cache entry: {:?}", cache_path)
+            })?;
         Ok(Some(entry))
     }
 
@@ -122,13 +118,15 @@ impl CacheStore {
         let cache_path = self.cache_path(&entry.source_path);
 
         if let Some(parent) = cache_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create cache directory: {:?}", parent))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create cache directory: {:?}", parent)
+            })?;
         }
 
         let content = serde_json::to_string_pretty(entry)?;
-        fs::write(&cache_path, content)
-            .with_context(|| format!("Failed to write cache entry: {:?}", cache_path))?;
+        fs::write(&cache_path, content).with_context(|| {
+            format!("Failed to write cache entry: {:?}", cache_path)
+        })?;
         Ok(())
     }
 
@@ -138,102 +136,24 @@ impl CacheStore {
             return Ok(ProjectIndex::default());
         }
 
-        let content = fs::read_to_string(&self.index_path)
-            .with_context(|| format!("Failed to read index: {:?}", self.index_path))?;
+        let content =
+            fs::read_to_string(&self.index_path).with_context(|| {
+                format!("Failed to read index: {:?}", self.index_path)
+            })?;
         let index: ProjectIndex = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse index: {:?}", self.index_path))?;
+            .with_context(|| {
+                format!("Failed to parse index: {:?}", self.index_path)
+            })?;
         Ok(index)
     }
 
     /// Save the project index.
     pub fn save_index(&self, index: &ProjectIndex) -> Result<()> {
         let content = serde_json::to_string_pretty(index)?;
-        fs::write(&self.index_path, content)
-            .with_context(|| format!("Failed to write index: {:?}", self.index_path))?;
+        fs::write(&self.index_path, content).with_context(|| {
+            format!("Failed to write index: {:?}", self.index_path)
+        })?;
         Ok(())
-    }
-
-    /// Load semantic tags.
-    pub fn load_tags(&self) -> Result<SemanticTags> {
-        if !self.tags_path.exists() {
-            return Ok(SemanticTags::new());
-        }
-
-        let content = fs::read_to_string(&self.tags_path)
-            .with_context(|| format!("Failed to read tags: {:?}", self.tags_path))?;
-        let tags: SemanticTags = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse tags: {:?}", self.tags_path))?;
-        Ok(tags)
-    }
-
-    /// Save semantic tags.
-    pub fn save_tags(&self, tags: &SemanticTags) -> Result<()> {
-        let content = serde_json::to_string_pretty(tags)?;
-        fs::write(&self.tags_path, content)
-            .with_context(|| format!("Failed to write tags: {:?}", self.tags_path))?;
-        Ok(())
-    }
-
-    /// Load staged tag changes.
-    pub fn load_staged_tags(&self) -> Result<StagedTags> {
-        if !self.staged_tags_path.exists() {
-            return Ok(StagedTags::new());
-        }
-
-        let content = fs::read_to_string(&self.staged_tags_path)
-            .with_context(|| format!("Failed to read staged tags: {:?}", self.staged_tags_path))?;
-        let staged: StagedTags = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse staged tags: {:?}", self.staged_tags_path))?;
-        Ok(staged)
-    }
-
-    /// Save staged tag changes.
-    pub fn save_staged_tags(&self, staged: &StagedTags) -> Result<()> {
-        if staged.is_empty() {
-            // Remove the file if there are no staged changes
-            if self.staged_tags_path.exists() {
-                fs::remove_file(&self.staged_tags_path)
-                    .with_context(|| format!("Failed to remove staged tags: {:?}", self.staged_tags_path))?;
-            }
-            return Ok(());
-        }
-
-        let content = serde_json::to_string_pretty(staged)?;
-        fs::write(&self.staged_tags_path, content)
-            .with_context(|| format!("Failed to write staged tags: {:?}", self.staged_tags_path))?;
-        Ok(())
-    }
-
-    /// Check if there are staged tag changes.
-    pub fn has_staged_tags(&self) -> bool {
-        self.staged_tags_path.exists()
-    }
-
-    /// Commit staged tags: merge into main tags and remove staged file.
-    pub fn commit_staged_tags(&self) -> Result<bool> {
-        let staged = self.load_staged_tags()?;
-        if staged.is_empty() {
-            return Ok(false);
-        }
-
-        let mut tags = self.load_tags()?;
-        tags.merge_staged(&staged);
-        self.save_tags(&tags)?;
-
-        // Remove staged file
-        if self.staged_tags_path.exists() {
-            fs::remove_file(&self.staged_tags_path)
-                .with_context(|| format!("Failed to remove staged tags: {:?}", self.staged_tags_path))?;
-        }
-
-        Ok(true)
-    }
-
-    /// Load tags with staged changes overlaid (for reading).
-    pub fn load_tags_with_staged(&self) -> Result<SemanticTags> {
-        let tags = self.load_tags()?;
-        let staged = self.load_staged_tags()?;
-        Ok(tags.with_staged(&staged))
     }
 
     /// Check if a source file is stale (needs re-extraction).
@@ -269,10 +189,7 @@ pub fn get_file_metadata(path: &Path) -> Result<FileMetadata> {
 
 /// Get current timestamp as seconds since UNIX epoch.
 pub fn now_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
 #[cfg(test)]
@@ -305,6 +222,9 @@ mod tests {
         let loaded = store.load_index().unwrap();
 
         assert_eq!(loaded.files.len(), 1);
-        assert_eq!(loaded.files.get(&PathBuf::from("src/main.rs")).unwrap().mtime, 123);
+        assert_eq!(
+            loaded.files.get(&PathBuf::from("src/main.rs")).unwrap().mtime,
+            123
+        );
     }
 }

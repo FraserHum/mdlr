@@ -38,9 +38,8 @@ impl Extractor for RustExtractor {
             .ok_or_else(|| anyhow::anyhow!("Failed to parse source"))?;
 
         // Get the crate name and module path for this file if resolution context is available
-        let (crate_name, crate_module_path) = resolution_ctx
-            .and_then(|ctx| ctx.file_to_module(path))
-            .unzip();
+        let (crate_name, crate_module_path) =
+            resolution_ctx.and_then(|ctx| ctx.file_to_module(path)).unzip();
 
         let mut units = Vec::new();
         let mut context = ExtractionContext {
@@ -110,7 +109,9 @@ impl<'a> ExtractionContext<'a> {
         let local_name = parts.join("::");
 
         // Use crate-based naming if resolution context is available
-        if let (Some(crate_name), Some(crate_module)) = (&self.crate_name, &self.crate_module_path) {
+        if let (Some(crate_name), Some(crate_module)) =
+            (&self.crate_name, &self.crate_module_path)
+        {
             // Build the full crate path: crate_name::module::local_name
             // Skip "crate" from module path since we use the actual crate name
             let module_parts: Vec<&str> = crate_module
@@ -122,7 +123,12 @@ impl<'a> ExtractionContext<'a> {
             if module_parts.is_empty() {
                 format!("{}::{}", crate_name, local_name)
             } else {
-                format!("{}::{}::{}", crate_name, module_parts.join("::"), local_name)
+                format!(
+                    "{}::{}::{}",
+                    crate_name,
+                    module_parts.join("::"),
+                    local_name
+                )
             }
         } else {
             // Fall back to file-based naming
@@ -144,7 +150,11 @@ impl<'a> ExtractionContext<'a> {
     }
 }
 
-fn extract_from_node(node: Node, ctx: &mut ExtractionContext, units: &mut Vec<Unit>) {
+fn extract_from_node(
+    node: Node,
+    ctx: &mut ExtractionContext,
+    units: &mut Vec<Unit>,
+) {
     match node.kind() {
         "function_item" => {
             if let Some(unit) = extract_function(node, ctx) {
@@ -201,10 +211,8 @@ fn extract_function(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
     let (reads, writes) = extract_field_access(node, ctx.source);
 
     // Resolve calls to fully qualified names
-    let calls: Vec<String> = raw_calls
-        .into_iter()
-        .map(|call| ctx.resolve_call(&call))
-        .collect();
+    let calls: Vec<String> =
+        raw_calls.into_iter().map(|call| ctx.resolve_call(&call)).collect();
 
     Some(Unit {
         id: ctx.qualified_name(&name),
@@ -267,12 +275,13 @@ fn extract_impl(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
     let type_node = node.child_by_field_name("type")?;
     let type_name = node_text(type_node, ctx.source);
 
-    let trait_name = node
-        .child_by_field_name("trait")
-        .map(|n| node_text(n, ctx.source));
+    let trait_name =
+        node.child_by_field_name("trait").map(|n| node_text(n, ctx.source));
 
     let id = match &trait_name {
-        Some(t) => ctx.qualified_name(&format!("impl {} for {}", t, type_name)),
+        Some(t) => {
+            ctx.qualified_name(&format!("impl {} for {}", t, type_name))
+        }
         None => ctx.qualified_name(&format!("impl {}", type_name)),
     };
 
@@ -423,7 +432,10 @@ fn count_branches_recursive(node: Node, count: &mut usize) {
 
 /// Extract field reads and writes from a function body
 /// Returns (reads, writes) where each is a list of field names
-fn extract_field_access(node: Node, source: &str) -> (Vec<String>, Vec<String>) {
+fn extract_field_access(
+    node: Node,
+    source: &str,
+) -> (Vec<String>, Vec<String>) {
     let mut reads = Vec::new();
     let mut writes = Vec::new();
     collect_field_access(node, source, &mut reads, &mut writes, false);
@@ -446,7 +458,10 @@ fn collect_field_access(
             // Check if this is self.field access
             if let Some(value) = node.child_by_field_name("value") {
                 let value_text = node_text(value, source);
-                if value_text == "self" || value_text == "&self" || value_text == "&mut self" {
+                if value_text == "self"
+                    || value_text == "&self"
+                    || value_text == "&mut self"
+                {
                     if let Some(field) = node.child_by_field_name("field") {
                         let field_name = node_text(field, source);
                         if in_assignment_lhs {
@@ -497,285 +512,5 @@ fn node_span(node: Node) -> Span {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn test_extract_function() {
-        let extractor = RustExtractor::new().unwrap();
-        let source = r#"
-fn hello() {
-    println!("Hello, world!");
-}
-
-fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-"#;
-        let units = extractor
-            .extract(source, &PathBuf::from("test.rs"), None)
-            .unwrap();
-
-        assert_eq!(units.len(), 2);
-        assert_eq!(units[0].id, "test.rs::hello");
-        assert_eq!(units[0].kind, UnitKind::Function);
-        assert_eq!(units[1].id, "test.rs::add");
-    }
-
-    #[test]
-    fn test_extract_struct() {
-        let extractor = RustExtractor::new().unwrap();
-        let source = r#"
-struct Point {
-    x: i32,
-    y: i32,
-}
-"#;
-        let units = extractor
-            .extract(source, &PathBuf::from("test.rs"), None)
-            .unwrap();
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].id, "test.rs::Point");
-        assert_eq!(units[0].kind, UnitKind::Struct);
-    }
-
-    #[test]
-    fn test_extract_calls() {
-        let extractor = RustExtractor::new().unwrap();
-        let source = r#"
-fn caller() {
-    foo();
-    bar();
-    baz::qux();
-}
-"#;
-        let units = extractor
-            .extract(source, &PathBuf::from("test.rs"), None)
-            .unwrap();
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].calls, vec!["bar", "baz::qux", "foo"]);
-    }
-
-    #[test]
-    fn test_extract_module() {
-        let extractor = RustExtractor::new().unwrap();
-        let source = r#"
-mod inner {
-    fn nested() {}
-}
-"#;
-        let units = extractor
-            .extract(source, &PathBuf::from("test.rs"), None)
-            .unwrap();
-
-        assert_eq!(units.len(), 1);
-        assert_eq!(units[0].id, "test.rs::inner::nested");
-    }
-
-    #[test]
-    fn test_extract_method_chains() {
-        let extractor = RustExtractor::new().unwrap();
-        let source = r#"
-fn chained() {
-    obj.method();
-    foo().bar();
-    fs::write("path", "content").unwrap();
-    TempDir::new().unwrap();
-    some.long.chain().of().calls();
-}
-"#;
-        let units = extractor
-            .extract(source, &PathBuf::from("test.rs"), None)
-            .unwrap();
-
-        assert_eq!(units.len(), 1);
-        let calls = &units[0].calls;
-        assert!(calls.contains(&"obj.method".to_string()));
-        assert!(calls.contains(&"foo".to_string()));
-        assert!(calls.contains(&"bar".to_string()));
-        assert!(calls.contains(&"fs::write".to_string()));
-        assert!(calls.contains(&"unwrap".to_string()));
-        assert!(calls.contains(&"TempDir::new".to_string()));
-        assert!(calls.contains(&"of".to_string()));
-        assert!(calls.contains(&"calls".to_string()));
-        // Should NOT contain the full multi-line expression
-        assert!(!calls.iter().any(|c| c.contains("content")));
-    }
-
-    #[test]
-    fn test_extract_params() {
-        let extractor = RustExtractor::new().unwrap();
-        let source = r#"
-fn no_params() {}
-fn one_param(a: i32) {}
-fn two_params(a: i32, b: String) {}
-fn with_self(&self, x: i32) {}
-"#;
-        let units = extractor
-            .extract(source, &PathBuf::from("test.rs"), None)
-            .unwrap();
-
-        assert_eq!(units.len(), 4);
-        assert_eq!(units[0].params, 0);
-        assert_eq!(units[1].params, 1);
-        assert_eq!(units[2].params, 2);
-        assert_eq!(units[3].params, 1); // self doesn't count
-    }
-
-    #[test]
-    fn test_extract_branches() {
-        let extractor = RustExtractor::new().unwrap();
-        let source = r#"
-fn simple() {
-    let x = 1;
-}
-
-fn with_if(x: i32) {
-    if x > 0 {
-        println!("positive");
-    }
-}
-
-fn with_if_else(x: i32) {
-    if x > 0 {
-        println!("positive");
-    } else {
-        println!("non-positive");
-    }
-}
-
-fn with_match(x: Option<i32>) {
-    match x {
-        Some(v) => println!("{}", v),
-        None => println!("none"),
-    }
-}
-
-fn with_loop() {
-    for i in 0..10 {
-        while true {
-            break;
-        }
-    }
-}
-
-fn with_and_or(a: bool, b: bool, c: bool) {
-    if a && b || c {
-        println!("complex");
-    }
-}
-"#;
-        let units = extractor
-            .extract(source, &PathBuf::from("test.rs"), None)
-            .unwrap();
-
-        assert_eq!(units.len(), 6);
-        assert_eq!(units[0].branches, 0, "simple should have 0 branches");
-        assert_eq!(units[1].branches, 1, "with_if should have 1 branch");
-        assert_eq!(units[2].branches, 1, "with_if_else should have 1 branch (else doesn't add)");
-        assert_eq!(units[3].branches, 1, "with_match with 2 arms should have 1 branch");
-        assert_eq!(units[4].branches, 2, "with_loop should have 2 branches (for + while)");
-        assert_eq!(units[5].branches, 3, "with_and_or should have 3 branches (if + && + ||)");
-    }
-
-    #[test]
-    fn test_extract_impl_methods() {
-        let extractor = RustExtractor::new().unwrap();
-        let source = r#"
-struct Foo {
-    x: i32,
-}
-
-impl Foo {
-    fn new() -> Self {
-        Self { x: 0 }
-    }
-
-    fn get_x(&self) -> i32 {
-        self.x
-    }
-
-    fn set_x(&mut self, val: i32) {
-        self.x = val;
-    }
-}
-"#;
-        let units = extractor
-            .extract(source, &PathBuf::from("test.rs"), None)
-            .unwrap();
-
-        // Should have: struct Foo, impl Foo, new, get_x, set_x
-        assert_eq!(units.len(), 5);
-
-        let impl_unit = units.iter().find(|u| u.id == "test.rs::impl Foo").unwrap();
-        assert_eq!(impl_unit.kind, UnitKind::Impl);
-        assert_eq!(impl_unit.impl_type, Some("Foo".to_string()));
-        assert_eq!(impl_unit.impl_trait, None);
-
-        let new_fn = units.iter().find(|u| u.id == "test.rs::impl Foo::new").unwrap();
-        assert_eq!(new_fn.parent, Some("test.rs::impl Foo".to_string()));
-
-        let get_x = units.iter().find(|u| u.id == "test.rs::impl Foo::get_x").unwrap();
-        assert_eq!(get_x.parent, Some("test.rs::impl Foo".to_string()));
-    }
-
-    #[test]
-    fn test_extract_trait_impl() {
-        let extractor = RustExtractor::new().unwrap();
-        let source = r#"
-struct Bar;
-
-impl Display for Bar {
-    fn fmt(&self, f: &mut Formatter) -> Result {
-        write!(f, "Bar")
-    }
-}
-"#;
-        let units = extractor
-            .extract(source, &PathBuf::from("test.rs"), None)
-            .unwrap();
-
-        let impl_unit = units
-            .iter()
-            .find(|u| u.id == "test.rs::impl Display for Bar")
-            .unwrap();
-        assert_eq!(impl_unit.impl_type, Some("Bar".to_string()));
-        assert_eq!(impl_unit.impl_trait, Some("Display".to_string()));
-
-        let fmt_fn = units.iter().find(|u| u.id == "test.rs::impl Display for Bar::fmt").unwrap();
-        assert_eq!(fmt_fn.parent, Some("test.rs::impl Display for Bar".to_string()));
-    }
-
-    #[test]
-    fn test_extract_field_access() {
-        let extractor = RustExtractor::new().unwrap();
-        let source = r#"
-impl Foo {
-    fn reader(&self) -> i32 {
-        self.x + self.y
-    }
-
-    fn writer(&mut self) {
-        self.x = 10;
-        self.y = self.z;
-    }
-}
-"#;
-        let units = extractor
-            .extract(source, &PathBuf::from("test.rs"), None)
-            .unwrap();
-
-        let reader = units.iter().find(|u| u.id == "test.rs::impl Foo::reader").unwrap();
-        assert!(reader.reads.contains(&"x".to_string()));
-        assert!(reader.reads.contains(&"y".to_string()));
-        assert!(reader.writes.is_empty());
-
-        let writer = units.iter().find(|u| u.id == "test.rs::impl Foo::writer").unwrap();
-        assert!(writer.writes.contains(&"x".to_string()));
-        assert!(writer.writes.contains(&"y".to_string()));
-        assert!(writer.reads.contains(&"z".to_string()));
-    }
-}
+#[path = "rust_tests.rs"]
+mod tests;

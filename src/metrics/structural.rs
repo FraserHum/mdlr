@@ -28,11 +28,7 @@ impl FanMetrics {
         let mut distribution: Vec<_> = counts.into_iter().collect();
         distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-        Self {
-            max,
-            mean,
-            distribution,
-        }
+        Self { max, mean, distribution }
     }
 }
 
