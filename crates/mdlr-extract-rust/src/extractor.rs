@@ -16,15 +16,34 @@ pub struct RustExtractor {
 }
 
 impl RustExtractor {
-    /// Create a new RustExtractor for the given source file paths.
+    /// Create a new RustExtractor from a list of all project files.
     ///
-    /// Discovers the Cargo workspace from the first path and builds
-    /// a resolution context for accurate call resolution.
-    pub fn new(paths: &[PathBuf]) -> Result<Self> {
-        let resolution_ctx = paths
-            .first()
-            .and_then(|p| p.parent())
-            .and_then(|dir| CargoWorkspace::discover(dir).ok())
+    /// Filters out `Cargo.toml` files and builds the workspace and resolution
+    /// context from them for accurate cross-crate call resolution.
+    pub fn new(all_files: &[PathBuf]) -> Result<Self> {
+        let cargo_files: Vec<PathBuf> = all_files
+            .iter()
+            .filter(|p| p.file_name().is_some_and(|n| n == "Cargo.toml"))
+            .cloned()
+            .collect();
+
+        let resolution_ctx = if cargo_files.is_empty() {
+            None
+        } else {
+            CargoWorkspace::from_cargo_files(&cargo_files)
+                .ok()
+                .map(ResolutionContext::build)
+        };
+
+        Ok(Self { resolution_ctx })
+    }
+
+    /// Create a new RustExtractor by discovering the workspace from a directory.
+    ///
+    /// Walks up from the given directory to find the workspace root.
+    pub fn discover(start_dir: &Path) -> Result<Self> {
+        let resolution_ctx = CargoWorkspace::discover(start_dir)
+            .ok()
             .map(ResolutionContext::build);
 
         Ok(Self { resolution_ctx })

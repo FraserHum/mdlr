@@ -35,13 +35,87 @@ impl CargoWorkspace {
     /// then discovers all members and path dependencies.
     pub fn discover(start_dir: &Path) -> Result<Self> {
         let root_manifest = find_workspace_root(start_dir)?;
+        Self::from_manifest(&root_manifest)
+    }
+
+    /// Load a workspace from a list of Cargo.toml file paths.
+    ///
+    /// Parses each manifest and collects all crates. The workspace root
+    /// is determined from the first manifest that defines a [workspace],
+    /// or the parent of the first manifest if none define a workspace.
+    pub fn from_cargo_files(cargo_files: &[PathBuf]) -> Result<Self> {
+        if cargo_files.is_empty() {
+            anyhow::bail!("No Cargo.toml files provided");
+        }
+
+        let mut members = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut workspace_root: Option<PathBuf> = None;
+
+        // First pass: find workspace root and parse all manifests
+        for manifest_path in cargo_files {
+            let content = std::fs::read_to_string(manifest_path)
+                .with_context(|| {
+                    format!("Failed to read {}", manifest_path.display())
+                })?;
+            let manifest: toml::Value =
+                content.parse().with_context(|| {
+                    format!("Failed to parse {}", manifest_path.display())
+                })?;
+
+            // Check if this is a workspace root
+            if manifest.get("workspace").is_some() && workspace_root.is_none()
+            {
+                workspace_root =
+                    manifest_path.parent().map(|p| p.to_path_buf());
+            }
+
+            // Parse as a crate if it has [package]
+            if manifest.get("package").is_some() {
+                if let Some(crate_root) = manifest_path.parent() {
+                    if seen.insert(crate_root.to_path_buf()) {
+                        if let Ok(crate_info) = parse_crate(crate_root) {
+                            members.push(crate_info);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Default workspace root to the parent of the first manifest
+        let root = workspace_root.unwrap_or_else(|| {
+            cargo_files[0]
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default()
+        });
+
+        // Second pass: recursively discover path dependencies
+        let mut i = 0;
+        while i < members.len() {
+            let path_deps: Vec<_> = members[i].path_deps.clone();
+            for (_, dep_path) in path_deps {
+                if seen.insert(dep_path.clone()) {
+                    if let Ok(crate_info) = parse_crate(&dep_path) {
+                        members.push(crate_info);
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        Ok(CargoWorkspace { root, members })
+    }
+
+    /// Load a workspace from a single Cargo.toml manifest path.
+    fn from_manifest(root_manifest: &Path) -> Result<Self> {
         let root = root_manifest
             .parent()
             .context("Cargo.toml has no parent directory")?
             .to_path_buf();
 
         let content =
-            std::fs::read_to_string(&root_manifest).with_context(|| {
+            std::fs::read_to_string(root_manifest).with_context(|| {
                 format!("Failed to read {}", root_manifest.display())
             })?;
         let manifest: toml::Value = content.parse().with_context(|| {

@@ -349,13 +349,8 @@ fn walk_and_extract_units(
         return Ok(result);
     }
 
-    // Create extractor once with all files to extract (builds resolution context once)
-    let all_paths: Vec<std::path::PathBuf> = collection
-        .files_to_extract
-        .iter()
-        .map(|(path, _, _, _)| path.clone())
-        .collect();
-    let extractor = RustExtractor::new(&all_paths)?;
+    // Create extractor with all files (it will find Cargo.toml files for workspace discovery)
+    let extractor = RustExtractor::new(&collection.all_files)?;
 
     // Extract from each file using the shared resolution context
     for (file_path, relative, mtime, size) in collection.files_to_extract {
