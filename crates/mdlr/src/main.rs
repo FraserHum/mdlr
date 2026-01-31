@@ -2,7 +2,6 @@ use anyhow::{Result, bail};
 use clap::Parser;
 use std::collections::HashSet;
 use std::env;
-use std::fs;
 use std::io::Write;
 use std::path::Path;
 
@@ -21,10 +20,8 @@ use json_output::{
     build_bucketed_json, build_complexity_json, build_fan_metrics_json,
     build_file_loc_json, build_semantic_tags_json, build_struct_json,
 };
-use mdlr_core::{CallResolver, Graph, Unit, build as build_graph};
-use mdlr_extract_rust::{
-    CargoWorkspace, ResolutionContext, extractor_for_path,
-};
+use mdlr_core::{Graph, Unit, build as build_graph};
+use mdlr_extract_rust::RustExtractor;
 use mdlr_metrics::{
     BucketedMetrics, ComplexityMetrics, FileLocMetrics, StructMetrics,
     StructuralMetrics, TagMetrics, Thresholds, compute as compute_structural,
@@ -181,6 +178,20 @@ struct WalkResult {
     files_with_matching_symbols: HashSet<std::path::PathBuf>,
 }
 
+/// Result of collecting files to process
+struct FileCollectionResult {
+    /// All files discovered by the walker
+    all_files: Vec<std::path::PathBuf>,
+    /// Rust files that need extraction (not cached or cache stale)
+    files_to_extract: Vec<(std::path::PathBuf, std::path::PathBuf, u64, u64)>, // (file_path, relative, mtime, size)
+    /// Units loaded from cache
+    cached_units: Vec<Unit>,
+    /// Count of cached files
+    cached_count: usize,
+    /// Files that contain matching symbols (for symbol filter)
+    files_with_matching_symbols: HashSet<std::path::PathBuf>,
+}
+
 /// Bundle of all computed metrics for a graph
 struct ComputedMetrics {
     graph: Graph,
@@ -198,7 +209,6 @@ struct CheckContext {
     store: CacheStore,
     config: config::Config,
     walker: SourceWalker,
-    resolution_ctx: Option<ResolutionContext>,
 }
 
 impl CheckContext {
@@ -207,11 +217,8 @@ impl CheckContext {
         let store = CacheStore::find_or_create(&cwd)?;
         let config = config::load()?;
         let walker = SourceWalker::new(store.root());
-        let resolution_ctx = CargoWorkspace::discover(store.root())
-            .ok()
-            .map(ResolutionContext::build);
 
-        Ok(CheckContext { cwd, store, config, walker, resolution_ctx })
+        Ok(CheckContext { cwd, store, config, walker })
     }
 }
 
@@ -239,24 +246,30 @@ fn parse_check_filter(target: Option<&str>, cwd: &Path) -> CheckFilter {
     }
 }
 
-/// Walk source files and extract units, using cache when available
-fn walk_and_extract_units(
+/// Collect files to process, separating cached from uncached
+fn collect_files_to_process(
     walker: &SourceWalker,
     filter: &CheckFilter,
     store: &CacheStore,
-    save: bool,
-    resolution_ctx: Option<&ResolutionContext>,
-) -> Result<WalkResult> {
-    let mut result = WalkResult {
-        units: Vec::new(),
-        extracted_count: 0,
+) -> Result<FileCollectionResult> {
+    let mut result = FileCollectionResult {
+        all_files: Vec::new(),
+        files_to_extract: Vec::new(),
+        cached_units: Vec::new(),
         cached_count: 0,
-        entries_to_save: Vec::new(),
         files_with_matching_symbols: HashSet::new(),
     };
 
     for file_path in walker.walk() {
+        // Collect all files before filtering
+        result.all_files.push(file_path.clone());
+
         if !passes_path_filter(&file_path, filter) {
+            continue;
+        }
+
+        // Only process Rust files for extraction
+        if file_path.extension().and_then(|e| e.to_str()) != Some("rs") {
             continue;
         }
 
@@ -265,26 +278,118 @@ fn walk_and_extract_units(
             .unwrap_or(&file_path)
             .to_path_buf();
 
-        let Some(units) = process_file(
-            &file_path,
-            &relative,
-            store,
-            save,
-            resolution_ctx,
-            &mut result,
-        )?
-        else {
-            continue;
-        };
+        let cached_entry = store.load_entry(&file_path)?;
 
-        // For symbol filter, check if any unit matches and track the file
-        if let CheckFilter::Symbol(symbol_id) = filter {
-            if units.iter().any(|u| u.id == *symbol_id) {
-                result.files_with_matching_symbols.insert(relative);
+        if let Some(entry) = cached_entry {
+            let current_meta = get_file_metadata(&file_path)?;
+
+            if entry.mtime == current_meta.mtime
+                && entry.size == current_meta.size
+            {
+                // Cache is valid
+                result.cached_count += 1;
+
+                // For symbol filter, check if any unit matches
+                if let CheckFilter::Symbol(symbol_id) = filter {
+                    if entry.units.iter().any(|u| u.id == *symbol_id) {
+                        result
+                            .files_with_matching_symbols
+                            .insert(relative.clone());
+                    }
+                }
+
+                result.cached_units.extend(entry.units);
+                continue;
+            }
+
+            // Cache is stale, need to re-extract
+            result.files_to_extract.push((
+                file_path,
+                relative,
+                current_meta.mtime,
+                current_meta.size,
+            ));
+        } else {
+            // No cache entry, need to extract
+            let Ok(current_meta) = get_file_metadata(&file_path) else {
+                continue;
+            };
+            result.files_to_extract.push((
+                file_path,
+                relative,
+                current_meta.mtime,
+                current_meta.size,
+            ));
+        }
+    }
+
+    Ok(result)
+}
+
+/// Walk source files and extract units, using cache when available
+fn walk_and_extract_units(
+    walker: &SourceWalker,
+    filter: &CheckFilter,
+    store: &CacheStore,
+    save: bool,
+) -> Result<WalkResult> {
+    // First pass: collect files and load from cache
+    let collection = collect_files_to_process(walker, filter, store)?;
+
+    let mut result = WalkResult {
+        units: collection.cached_units,
+        extracted_count: 0,
+        cached_count: collection.cached_count,
+        entries_to_save: Vec::new(),
+        files_with_matching_symbols: collection.files_with_matching_symbols,
+    };
+
+    // If no files need extraction, we're done
+    if collection.files_to_extract.is_empty() {
+        return Ok(result);
+    }
+
+    // Create extractor once with all files to extract (builds resolution context once)
+    let all_paths: Vec<std::path::PathBuf> = collection
+        .files_to_extract
+        .iter()
+        .map(|(path, _, _, _)| path.clone())
+        .collect();
+    let extractor = RustExtractor::new(&all_paths)?;
+
+    // Extract from each file using the shared resolution context
+    for (file_path, relative, mtime, size) in collection.files_to_extract {
+        match extractor.extract_all(&[file_path.clone()]) {
+            Ok(units) => {
+                result.extracted_count += 1;
+
+                // For symbol filter, check if any unit matches
+                if let CheckFilter::Symbol(symbol_id) = filter {
+                    if units.iter().any(|u| u.id == *symbol_id) {
+                        result
+                            .files_with_matching_symbols
+                            .insert(relative.clone());
+                    }
+                }
+
+                if save {
+                    result.entries_to_save.push(build_cache_entry(
+                        &relative,
+                        mtime,
+                        size,
+                        units.clone(),
+                    ));
+                }
+                result.units.extend(units);
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to extract {}: {}",
+                    file_path.display(),
+                    e
+                );
             }
         }
-
-        result.units.extend(units);
     }
 
     Ok(result)
@@ -314,125 +419,6 @@ fn build_cache_entry(
         size,
         units,
         cached_at: now_timestamp(),
-    }
-}
-
-/// Process a single file, returning its units if successful
-fn process_file(
-    file_path: &Path,
-    relative: &Path,
-    store: &CacheStore,
-    save: bool,
-    resolution_ctx: Option<&ResolutionContext>,
-    result: &mut WalkResult,
-) -> Result<Option<Vec<Unit>>> {
-    let cached_entry = store.load_entry(file_path)?;
-
-    if let Some(entry) = cached_entry {
-        process_cached_file(
-            file_path,
-            relative,
-            entry,
-            save,
-            resolution_ctx,
-            result,
-        )
-    } else {
-        Ok(process_uncached_file(
-            file_path,
-            relative,
-            save,
-            resolution_ctx,
-            result,
-        ))
-    }
-}
-
-/// Process a file that has a cache entry
-fn process_cached_file(
-    file_path: &Path,
-    relative: &Path,
-    entry: FileCacheEntry,
-    save: bool,
-    resolution_ctx: Option<&ResolutionContext>,
-    result: &mut WalkResult,
-) -> Result<Option<Vec<Unit>>> {
-    let current_meta = get_file_metadata(file_path)?;
-
-    if entry.mtime == current_meta.mtime && entry.size == current_meta.size {
-        result.cached_count += 1;
-        return Ok(Some(entry.units));
-    }
-
-    // Cache is stale, re-extract
-    let Some(units) = extract_units_from_file(file_path, resolution_ctx)
-    else {
-        return Ok(None);
-    };
-
-    result.extracted_count += 1;
-    if save {
-        result.entries_to_save.push(build_cache_entry(
-            relative,
-            current_meta.mtime,
-            current_meta.size,
-            units.clone(),
-        ));
-    }
-    Ok(Some(units))
-}
-
-/// Process a file that has no cache entry
-fn process_uncached_file(
-    file_path: &Path,
-    relative: &Path,
-    save: bool,
-    _resolution_ctx: Option<&ResolutionContext>,
-    result: &mut WalkResult,
-) -> Option<Vec<Unit>> {
-    let extractor = extractor_for_path(file_path)?;
-    let current_meta = get_file_metadata(file_path).ok()?;
-
-    match extract_file(file_path, extractor.as_ref()) {
-        Ok(units) => {
-            result.extracted_count += 1;
-            if save {
-                result.entries_to_save.push(build_cache_entry(
-                    relative,
-                    current_meta.mtime,
-                    current_meta.size,
-                    units.clone(),
-                ));
-            }
-            Some(units)
-        }
-        Err(e) => {
-            eprintln!(
-                "Warning: Failed to extract {}: {}",
-                file_path.display(),
-                e
-            );
-            None
-        }
-    }
-}
-
-/// Helper to extract units from a file, returning None on failure
-fn extract_units_from_file(
-    file_path: &Path,
-    _resolution_ctx: Option<&ResolutionContext>,
-) -> Option<Vec<Unit>> {
-    let extractor = extractor_for_path(file_path)?;
-    match extract_file(file_path, extractor.as_ref()) {
-        Ok(units) => Some(units),
-        Err(e) => {
-            eprintln!(
-                "Warning: Failed to extract {}: {}",
-                file_path.display(),
-                e
-            );
-            None
-        }
     }
 }
 
@@ -467,12 +453,11 @@ fn save_cache_entries(
 /// Compute all metrics from units
 fn compute_all_metrics(
     units: Vec<Unit>,
-    resolution_ctx: Option<&ResolutionContext>,
     store: &CacheStore,
 ) -> ComputedMetrics {
-    let resolver: Option<&dyn CallResolver> =
-        resolution_ctx.map(|r| r as &dyn CallResolver);
-    let graph = build_graph(units, resolver);
+    // Build graph without resolution context for now
+    // (resolution is already done during extraction)
+    let graph = build_graph(units, None);
     let structural = compute_structural(&graph);
     let complexity = ComplexityMetrics::compute(&graph);
     let struct_metrics = StructMetrics::compute(&graph);
@@ -711,13 +696,8 @@ fn handle_check(
     let ctx = CheckContext::new()?;
 
     let filter = parse_check_filter(target, &ctx.cwd);
-    let walk_result = walk_and_extract_units(
-        &ctx.walker,
-        &filter,
-        &ctx.store,
-        save,
-        ctx.resolution_ctx.as_ref(),
-    )?;
+    let walk_result =
+        walk_and_extract_units(&ctx.walker, &filter, &ctx.store, save)?;
 
     let units = walk_result.units;
 
@@ -741,8 +721,7 @@ fn handle_check(
     }
 
     // Build full graph with all units to capture all edges (including callers)
-    let computed =
-        compute_all_metrics(units, ctx.resolution_ctx.as_ref(), &ctx.store);
+    let computed = compute_all_metrics(units, &ctx.store);
 
     // Filter is applied at output time, not graph construction time
     match format {
@@ -792,12 +771,4 @@ fn handle_tag(
     }
 
     handle_tag_show(&store, &symbol, format)
-}
-
-fn extract_file(
-    abs_path: &Path,
-    extractor: &dyn mdlr_core::Extractor,
-) -> Result<Vec<Unit>> {
-    let source = fs::read_to_string(abs_path)?;
-    extractor.extract(&source, abs_path)
 }

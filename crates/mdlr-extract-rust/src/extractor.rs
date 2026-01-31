@@ -1,46 +1,65 @@
 use anyhow::Result;
-use mdlr_core::{Extractor, Span, Unit, UnitKind};
-use std::path::Path;
+use mdlr_core::{Span, Unit, UnitKind};
+use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Parser};
 
-use crate::resolve::ResolutionContext;
+use crate::resolve::{CargoWorkspace, ResolutionContext};
 
-pub struct RustExtractor;
-
-impl RustExtractor {
-    pub fn new() -> Result<Self> {
-        Ok(Self)
-    }
-}
-
-impl Default for RustExtractor {
-    fn default() -> Self {
-        Self::new().expect("Failed to create Rust parser")
-    }
-}
-
-impl Extractor for RustExtractor {
-    fn language(&self) -> &'static str {
-        "rust"
-    }
-
-    fn extensions(&self) -> &'static [&'static str] {
-        &["rs"]
-    }
-
-    fn extract(&self, source: &str, path: &Path) -> Result<Vec<Unit>> {
-        self.extract_with_context(source, path, None)
-    }
+/// Rust source code extractor.
+///
+/// Extracts units (functions, structs, methods) from Rust source files.
+/// Builds a resolution context from the Cargo workspace for accurate
+/// cross-crate call resolution.
+pub struct RustExtractor {
+    /// Resolution context built from Cargo workspace
+    resolution_ctx: Option<ResolutionContext>,
 }
 
 impl RustExtractor {
-    /// Extract with optional resolution context for more accurate call resolution.
-    pub fn extract_with_context(
-        &self,
-        source: &str,
-        path: &Path,
-        resolution_ctx: Option<&ResolutionContext>,
-    ) -> Result<Vec<Unit>> {
+    /// Create a new RustExtractor for the given source file paths.
+    ///
+    /// Discovers the Cargo workspace from the first path and builds
+    /// a resolution context for accurate call resolution.
+    pub fn new(paths: &[PathBuf]) -> Result<Self> {
+        let resolution_ctx = paths
+            .first()
+            .and_then(|p| p.parent())
+            .and_then(|dir| CargoWorkspace::discover(dir).ok())
+            .map(ResolutionContext::build);
+
+        Ok(Self { resolution_ctx })
+    }
+
+    /// Extract units from all provided paths.
+    ///
+    /// Loads each file from disk and extracts its units.
+    pub fn extract_all(&self, paths: &[PathBuf]) -> Result<Vec<Unit>> {
+        let mut all_units = Vec::new();
+
+        for path in paths {
+            match self.extract_file(path) {
+                Ok(units) => all_units.extend(units),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to extract {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(all_units)
+    }
+
+    /// Extract units from a single file.
+    fn extract_file(&self, path: &Path) -> Result<Vec<Unit>> {
+        let source = std::fs::read_to_string(path)?;
+        self.extract_source(&source, path)
+    }
+
+    /// Extract units from source code.
+    fn extract_source(&self, source: &str, path: &Path) -> Result<Vec<Unit>> {
         let mut parser = Parser::new();
         parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;
 
@@ -49,8 +68,11 @@ impl RustExtractor {
             .ok_or_else(|| anyhow::anyhow!("Failed to parse source"))?;
 
         // Get the crate name and module path for this file if resolution context is available
-        let (crate_name, crate_module_path) =
-            resolution_ctx.and_then(|ctx| ctx.file_to_module(path)).unzip();
+        let (crate_name, crate_module_path) = self
+            .resolution_ctx
+            .as_ref()
+            .and_then(|ctx| ctx.file_to_module(path))
+            .unzip();
 
         let mut units = Vec::new();
         let mut context = ExtractionContext {
@@ -58,7 +80,7 @@ impl RustExtractor {
             path,
             module_path: Vec::new(),
             current_struct: None,
-            resolution_ctx,
+            resolution_ctx: self.resolution_ctx.as_ref(),
             crate_name,
             crate_module_path,
         };
@@ -66,6 +88,17 @@ impl RustExtractor {
         extract_from_node(tree.root_node(), &mut context, &mut units);
 
         Ok(units)
+    }
+
+    /// Get the resolution context, if available.
+    pub fn resolution_context(&self) -> Option<&ResolutionContext> {
+        self.resolution_ctx.as_ref()
+    }
+
+    /// Create an extractor without resolution context (for testing).
+    #[cfg(test)]
+    fn new_without_context() -> Self {
+        Self { resolution_ctx: None }
     }
 }
 
@@ -511,11 +544,10 @@ fn node_span(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn test_extract_function() {
-        let extractor = RustExtractor::new().unwrap();
+        let extractor = RustExtractor::new_without_context();
         let source = r#"
 fn hello() {
     println!("Hello, world!");
@@ -526,7 +558,7 @@ fn add(a: i32, b: i32) -> i32 {
 }
 "#;
         let units =
-            extractor.extract(source, &PathBuf::from("test.rs")).unwrap();
+            extractor.extract_source(source, Path::new("test.rs")).unwrap();
 
         assert_eq!(units.len(), 2);
         assert_eq!(units[0].id, "test.rs::hello");
@@ -536,7 +568,7 @@ fn add(a: i32, b: i32) -> i32 {
 
     #[test]
     fn test_extract_struct() {
-        let extractor = RustExtractor::new().unwrap();
+        let extractor = RustExtractor::new_without_context();
         let source = r#"
 struct Point {
     x: i32,
@@ -544,7 +576,7 @@ struct Point {
 }
 "#;
         let units =
-            extractor.extract(source, &PathBuf::from("test.rs")).unwrap();
+            extractor.extract_source(source, Path::new("test.rs")).unwrap();
 
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].id, "test.rs::Point");
@@ -553,7 +585,7 @@ struct Point {
 
     #[test]
     fn test_extract_impl_methods() {
-        let extractor = RustExtractor::new().unwrap();
+        let extractor = RustExtractor::new_without_context();
         let source = r#"
 struct Foo {
     x: i32,
@@ -574,7 +606,7 @@ impl Foo {
 }
 "#;
         let units =
-            extractor.extract(source, &PathBuf::from("test.rs")).unwrap();
+            extractor.extract_source(source, Path::new("test.rs")).unwrap();
 
         // Should have: struct Foo, new, get_x, set_x (no impl block unit)
         assert_eq!(units.len(), 4);
@@ -596,7 +628,7 @@ impl Foo {
 
     #[test]
     fn test_extract_trait_impl_methods() {
-        let extractor = RustExtractor::new().unwrap();
+        let extractor = RustExtractor::new_without_context();
         let source = r#"
 struct Bar;
 
@@ -607,7 +639,7 @@ impl Display for Bar {
 }
 "#;
         let units =
-            extractor.extract(source, &PathBuf::from("test.rs")).unwrap();
+            extractor.extract_source(source, Path::new("test.rs")).unwrap();
 
         // Should have: struct Bar, fmt method (no impl block unit)
         assert_eq!(units.len(), 2);
@@ -621,7 +653,7 @@ impl Display for Bar {
 
     #[test]
     fn test_extract_field_access() {
-        let extractor = RustExtractor::new().unwrap();
+        let extractor = RustExtractor::new_without_context();
         let source = r#"
 impl Foo {
     fn reader(&self) -> i32 {
@@ -635,7 +667,7 @@ impl Foo {
 }
 "#;
         let units =
-            extractor.extract(source, &PathBuf::from("test.rs")).unwrap();
+            extractor.extract_source(source, Path::new("test.rs")).unwrap();
 
         let reader =
             units.iter().find(|u| u.id == "test.rs::Foo::reader").unwrap();
@@ -652,14 +684,14 @@ impl Foo {
 
     #[test]
     fn test_extract_module() {
-        let extractor = RustExtractor::new().unwrap();
+        let extractor = RustExtractor::new_without_context();
         let source = r#"
 mod inner {
     fn nested() {}
 }
 "#;
         let units =
-            extractor.extract(source, &PathBuf::from("test.rs")).unwrap();
+            extractor.extract_source(source, Path::new("test.rs")).unwrap();
 
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].id, "test.rs::inner::nested");
@@ -667,7 +699,7 @@ mod inner {
 
     #[test]
     fn test_extract_params() {
-        let extractor = RustExtractor::new().unwrap();
+        let extractor = RustExtractor::new_without_context();
         let source = r#"
 fn no_params() {}
 fn one_param(a: i32) {}
@@ -675,7 +707,7 @@ fn two_params(a: i32, b: String) {}
 fn with_self(&self, x: i32) {}
 "#;
         let units =
-            extractor.extract(source, &PathBuf::from("test.rs")).unwrap();
+            extractor.extract_source(source, Path::new("test.rs")).unwrap();
 
         assert_eq!(units.len(), 4);
         assert_eq!(units[0].params, 0);
@@ -686,7 +718,7 @@ fn with_self(&self, x: i32) {}
 
     #[test]
     fn test_extract_branches() {
-        let extractor = RustExtractor::new().unwrap();
+        let extractor = RustExtractor::new_without_context();
         let source = r#"
 fn simple() {
     let x = 1;
@@ -706,7 +738,7 @@ fn with_match(x: Option<i32>) {
 }
 "#;
         let units =
-            extractor.extract(source, &PathBuf::from("test.rs")).unwrap();
+            extractor.extract_source(source, Path::new("test.rs")).unwrap();
 
         assert_eq!(units.len(), 3);
         assert_eq!(units[0].branches, 0, "simple should have 0 branches");

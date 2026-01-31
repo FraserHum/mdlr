@@ -1,8 +1,7 @@
 use ignore::WalkBuilder;
-use mdlr_extract_rust::supported_extensions;
 use std::path::{Path, PathBuf};
 
-/// Walker for traversing source files in a project, respecting .gitignore.
+/// Walker for traversing files in a project, respecting .gitignore.
 pub struct SourceWalker {
     root: PathBuf,
 }
@@ -12,31 +11,25 @@ impl SourceWalker {
         Self { root: root.to_path_buf() }
     }
 
-    /// Walk the source tree, yielding paths to supported source files.
-    /// Respects .gitignore and other standard ignore patterns.
+    /// Walk the source tree, yielding paths to all files.
+    /// Respects .gitignore but includes hidden files (except .git directory).
     pub fn walk(&self) -> impl Iterator<Item = PathBuf> {
-        let extensions = supported_extensions();
-
         WalkBuilder::new(&self.root)
-            .standard_filters(true)
-            .hidden(true)
+            .hidden(false) // Include hidden files (e.g., .gitignore, .cargo/config.toml)
+            .git_ignore(true) // Respect .gitignore
+            .git_global(true) // Respect global gitignore
+            .git_exclude(true) // Respect .git/info/exclude
+            .filter_entry(|entry| {
+                // Exclude .git directory
+                entry.file_name() != ".git"
+            })
             .build()
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
                 entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
             })
-            .filter(move |entry| {
-                has_supported_extension(entry.path(), extensions)
-            })
             .map(|entry| entry.into_path())
     }
-}
-
-fn has_supported_extension(path: &Path, extensions: &[&str]) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| extensions.contains(&ext))
-        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -46,7 +39,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_walk_finds_rust_files() {
+    fn test_walk_finds_all_files() {
         let temp = TempDir::new().unwrap();
         let src_dir = temp.path().join("src");
         fs::create_dir_all(&src_dir).unwrap();
@@ -58,9 +51,10 @@ mod tests {
         let walker = SourceWalker::new(temp.path());
         let files: Vec<_> = walker.walk().collect();
 
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 3);
         assert!(files.iter().any(|p| p.ends_with("main.rs")));
         assert!(files.iter().any(|p| p.ends_with("lib.rs")));
+        assert!(files.iter().any(|p| p.ends_with("readme.txt")));
     }
 
     #[test]
@@ -87,8 +81,10 @@ mod tests {
         let walker = SourceWalker::new(temp.path());
         let files: Vec<_> = walker.walk().collect();
 
-        assert_eq!(files.len(), 1);
+        // main.rs and .gitignore should be found, target/ is ignored
+        assert_eq!(files.len(), 2);
         assert!(files.iter().any(|p| p.ends_with("main.rs")));
+        assert!(files.iter().any(|p| p.ends_with(".gitignore")));
         assert!(!files.iter().any(|p| p.to_string_lossy().contains("target")));
     }
 }
