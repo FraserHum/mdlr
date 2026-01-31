@@ -20,7 +20,7 @@ pub enum Command {
         #[arg(long)]
         save: bool,
         /// Max opportunities to show per metric (-1 for all)
-        #[arg(short, default_value = "3", allow_hyphen_values = true)]
+        #[arg(short, default_value = "10", allow_hyphen_values = true)]
         k: i32,
         /// Pretty print as aligned table
         #[arg(long)]

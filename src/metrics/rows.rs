@@ -1,3 +1,4 @@
+use crate::config::Bucket;
 use crate::config::Config;
 use crate::config::MetricThresholds;
 use crate::metrics::{
@@ -7,6 +8,32 @@ use crate::metrics::{
 
 /// A metric row: (metric_name, symbol, value, bucket)
 pub type MetricRow = (String, String, String, String);
+
+/// Internal representation with bucket for sorting
+struct ScoredRow {
+    metric_name: String,
+    symbol: String,
+    value: String,
+    bucket: Bucket,
+}
+
+impl ScoredRow {
+    /// Convert to MetricRow for output
+    fn into_row(self) -> MetricRow {
+        (self.metric_name, self.symbol, self.value, self.bucket.to_string())
+    }
+
+    /// Severity score for sorting (higher = worse)
+    fn severity(&self) -> u8 {
+        match self.bucket {
+            Bucket::Excellent => 0,
+            Bucket::Good => 1,
+            Bucket::Fair => 2,
+            Bucket::Poor => 3,
+            Bucket::Critical => 4,
+        }
+    }
+}
 
 /// Bundle of all computed metrics for collection
 pub struct MetricsBundle<'a> {
@@ -26,26 +53,29 @@ struct IntMetricSpec<'a> {
 }
 
 impl IntMetricSpec<'_> {
-    fn collect(
+    /// Collect all entries (for global sorting mode)
+    fn collect_all(&self, rows: &mut Vec<ScoredRow>) {
+        for (name, value) in self.distribution {
+            if *value > self.min_value {
+                let bucket = self.thresholds.evaluate(*value as f64);
+                rows.push(ScoredRow {
+                    metric_name: self.name.to_string(),
+                    symbol: name.clone(),
+                    value: value.to_string(),
+                    bucket,
+                });
+            }
+        }
+    }
+
+    /// Collect with per-metric limit (for symbol filter mode)
+    fn collect_filtered(
         &self,
         rows: &mut Vec<MetricRow>,
-        limit: usize,
-        symbol_filter: Option<&str>,
+        symbol_filter: &str,
     ) {
-        let iter: Box<dyn Iterator<Item = &(String, usize)>> =
-            if let Some(filter) = symbol_filter {
-                // When filtering, only include the matching symbol
-                Box::new(
-                    self.distribution
-                        .iter()
-                        .filter(move |(name, _)| name == filter),
-                )
-            } else {
-                Box::new(self.distribution.iter().take(limit))
-            };
-
-        for (name, value) in iter {
-            if *value > self.min_value {
+        for (name, value) in self.distribution.iter() {
+            if name == symbol_filter && *value > self.min_value {
                 let bucket = self.thresholds.evaluate(*value as f64);
                 rows.push((
                     self.name.to_string(),
@@ -67,26 +97,29 @@ struct FloatMetricSpec<'a> {
 }
 
 impl FloatMetricSpec<'_> {
-    fn collect(
+    /// Collect all entries (for global sorting mode)
+    fn collect_all(&self, rows: &mut Vec<ScoredRow>) {
+        for (name, value) in self.distribution {
+            if *value > self.min_value {
+                let bucket = self.thresholds.evaluate(*value);
+                rows.push(ScoredRow {
+                    metric_name: self.name.to_string(),
+                    symbol: name.clone(),
+                    value: format!("{:.2}", value),
+                    bucket,
+                });
+            }
+        }
+    }
+
+    /// Collect with per-metric limit (for symbol filter mode)
+    fn collect_filtered(
         &self,
         rows: &mut Vec<MetricRow>,
-        limit: usize,
-        symbol_filter: Option<&str>,
+        symbol_filter: &str,
     ) {
-        let iter: Box<dyn Iterator<Item = &(String, f64)>> =
-            if let Some(filter) = symbol_filter {
-                // When filtering, only include the matching symbol
-                Box::new(
-                    self.distribution
-                        .iter()
-                        .filter(move |(name, _)| name == filter),
-                )
-            } else {
-                Box::new(self.distribution.iter().take(limit))
-            };
-
-        for (name, value) in iter {
-            if *value > self.min_value {
+        for (name, value) in self.distribution.iter() {
+            if name == symbol_filter && *value > self.min_value {
                 let bucket = self.thresholds.evaluate(*value);
                 rows.push((
                     self.name.to_string(),
@@ -101,9 +134,12 @@ impl FloatMetricSpec<'_> {
 
 /// Collect metric rows for text output.
 ///
-/// The `k` parameter limits how many rows are collected per metric:
+/// The `k` parameter limits how many rows are collected globally:
 /// - If `k < 0`, all rows are collected
-/// - If `k >= 0`, at most `k` rows are collected per metric
+/// - If `k >= 0`, at most `k` rows are collected total, prioritizing by severity
+///
+/// Rows are selected by severity (critical first, then poor, fair, good, excellent)
+/// across all metric types, then grouped by metric type for display.
 ///
 /// The `symbol_filter` parameter, when `Some`, limits output to only the
 /// matching symbol. This is used when filtering by a specific symbol ID.
@@ -113,7 +149,6 @@ pub fn collect(
     k: i32,
     symbol_filter: Option<&str>,
 ) -> Vec<MetricRow> {
-    let mut rows: Vec<MetricRow> = Vec::new();
     let t = &config.thresholds;
     let m = metrics;
 
@@ -169,11 +204,6 @@ pub fn collect(
         },
     ];
 
-    for spec in &int_specs {
-        let limit = if k < 0 { spec.distribution.len() } else { k as usize };
-        spec.collect(&mut rows, limit, symbol_filter);
-    }
-
     // Float metrics
     let float_specs = [FloatMetricSpec {
         name: "lcom",
@@ -182,15 +212,69 @@ pub fn collect(
         min_value: 0.0,
     }];
 
-    for spec in &float_specs {
-        let limit = if k < 0 { spec.distribution.len() } else { k as usize };
-        spec.collect(&mut rows, limit, symbol_filter);
+    // Handle symbol filter mode separately (no global sorting)
+    if let Some(filter) = symbol_filter {
+        let mut rows: Vec<MetricRow> = Vec::new();
+        for spec in &int_specs {
+            spec.collect_filtered(&mut rows, filter);
+        }
+        for spec in &float_specs {
+            spec.collect_filtered(&mut rows, filter);
+        }
+        return rows;
     }
 
-    // Conceptual metrics (if tags exist) - only collect if not filtering by symbol
-    if symbol_filter.is_none() {
-        collect_conceptual_metrics(&mut rows, m, k);
+    // Collect all rows with severity scores
+    let mut scored_rows: Vec<ScoredRow> = Vec::new();
+    for spec in &int_specs {
+        spec.collect_all(&mut scored_rows);
     }
+    for spec in &float_specs {
+        spec.collect_all(&mut scored_rows);
+    }
+
+    // Sort by severity descending (worst first)
+    scored_rows.sort_by(|a, b| b.severity().cmp(&a.severity()));
+
+    // Apply global limit
+    let selected: Vec<ScoredRow> = if k < 0 {
+        scored_rows
+    } else {
+        scored_rows.into_iter().take(k as usize).collect()
+    };
+
+    // Group by metric type to maintain display grouping
+    let mut grouped: std::collections::HashMap<String, Vec<ScoredRow>> =
+        std::collections::HashMap::new();
+    for row in selected {
+        grouped.entry(row.metric_name.clone()).or_default().push(row);
+    }
+
+    // Define metric order for consistent output
+    let metric_order = [
+        "fan_out",
+        "fan_in",
+        "function_size",
+        "params",
+        "cyclomatic",
+        "methods_per_impl",
+        "traits_per_type",
+        "file_loc",
+        "lcom",
+    ];
+
+    // Convert to MetricRows in metric order
+    let mut rows: Vec<MetricRow> = Vec::new();
+    for metric_name in &metric_order {
+        if let Some(metric_rows) = grouped.remove(*metric_name) {
+            for row in metric_rows {
+                rows.push(row.into_row());
+            }
+        }
+    }
+
+    // Conceptual metrics (if tags exist)
+    collect_conceptual_metrics(&mut rows, m, k);
 
     rows
 }
@@ -266,14 +350,15 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_respects_k_limit() {
+    fn test_collect_respects_global_k_limit() {
         let graph = Graph::new();
         let mut structural = compute(&graph);
-        // Add some fan_out entries
+        // Add fan_out entries with different severities
+        // Thresholds: excellent < 3, good < 5, fair < 8, poor < 12
         structural.fan_out.distribution = vec![
-            ("a".to_string(), 5),
-            ("b".to_string(), 4),
-            ("c".to_string(), 3),
+            ("a".to_string(), 15), // critical
+            ("b".to_string(), 10), // poor
+            ("c".to_string(), 6),  // fair
         ];
 
         let complexity = ComplexityMetrics::compute(&graph);
@@ -289,12 +374,51 @@ mod tests {
             file_loc: &file_loc,
             tag_metrics: &tag_metrics,
         };
-        // With k=2, should only get 2 fan_out rows
+        // With k=2, should only get 2 total rows (the worst ones)
         let rows = collect(&bundle, &config, 2, None);
 
-        let fan_out_rows: Vec<_> =
-            rows.iter().filter(|r| r.0 == "fan_out").collect();
-        assert_eq!(fan_out_rows.len(), 2);
+        assert_eq!(rows.len(), 2);
+        // Should have the critical and poor ones
+        assert!(rows.iter().any(|r| r.1 == "a" && r.3 == "critical"));
+        assert!(rows.iter().any(|r| r.1 == "b" && r.3 == "poor"));
+    }
+
+    #[test]
+    fn test_collect_prioritizes_severity_across_metrics() {
+        let graph = Graph::new();
+        let mut structural = compute(&graph);
+        // fan_out: fair severity (value 6, threshold < 8 for fair)
+        structural.fan_out.distribution = vec![("fan_out_sym".to_string(), 6)];
+        // fan_in: critical severity (value 20, threshold < 15 for poor)
+        structural.fan_in.distribution = vec![("fan_in_sym".to_string(), 20)];
+
+        let mut complexity = ComplexityMetrics::compute(&graph);
+        // function_size: poor severity (value 150, threshold < 200 for poor)
+        complexity.size.distribution = vec![("func_sym".to_string(), 150)];
+
+        let impl_metrics = ImplMetrics::compute(&graph);
+        let file_loc = FileLocMetrics::compute(&graph);
+        let tag_metrics = TagMetrics::compute(&graph, &Default::default());
+        let config = Config::default();
+
+        let bundle = MetricsBundle {
+            structural: &structural,
+            complexity: &complexity,
+            impl_metrics: &impl_metrics,
+            file_loc: &file_loc,
+            tag_metrics: &tag_metrics,
+        };
+
+        // With k=2, should get the critical fan_in and poor function_size
+        // (not the fair fan_out)
+        let rows = collect(&bundle, &config, 2, None);
+
+        assert_eq!(rows.len(), 2);
+        // Should have fan_in (critical) and function_size (poor)
+        assert!(rows.iter().any(|r| r.0 == "fan_in" && r.3 == "critical"));
+        assert!(rows.iter().any(|r| r.0 == "function_size" && r.3 == "poor"));
+        // Should NOT have fan_out (fair)
+        assert!(!rows.iter().any(|r| r.0 == "fan_out"));
     }
 
     #[test]
