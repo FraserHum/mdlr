@@ -182,8 +182,9 @@ struct WalkResult {
 struct FileCollectionResult {
     /// All files discovered by the walker
     all_files: Vec<std::path::PathBuf>,
-    /// Rust files that need extraction (not cached or cache stale)
-    files_to_extract: Vec<(std::path::PathBuf, std::path::PathBuf, u64, u64)>, // (file_path, relative, mtime, size)
+    /// Rust files that need extraction (not cached or cache stale).
+    /// source_path contains the absolute path; units is empty until extraction.
+    files_to_extract: Vec<FileCacheEntry>,
     /// Units loaded from cache
     cached_units: Vec<Unit>,
     /// Count of cached files
@@ -303,23 +304,25 @@ fn collect_files_to_process(
             }
 
             // Cache is stale, need to re-extract
-            result.files_to_extract.push((
-                file_path,
-                relative,
-                current_meta.mtime,
-                current_meta.size,
-            ));
+            result.files_to_extract.push(FileCacheEntry {
+                source_path: file_path,
+                mtime: current_meta.mtime,
+                size: current_meta.size,
+                units: Vec::new(),
+                cached_at: 0,
+            });
         } else {
             // No cache entry, need to extract
             let Ok(current_meta) = get_file_metadata(&file_path) else {
                 continue;
             };
-            result.files_to_extract.push((
-                file_path,
-                relative,
-                current_meta.mtime,
-                current_meta.size,
-            ));
+            result.files_to_extract.push(FileCacheEntry {
+                source_path: file_path,
+                mtime: current_meta.mtime,
+                size: current_meta.size,
+                units: Vec::new(),
+                cached_at: 0,
+            });
         }
     }
 
@@ -353,10 +356,16 @@ fn walk_and_extract_units(
     let extractor = RustExtractor::new(&collection.all_files)?;
 
     // Extract from each file using the shared resolution context
-    for (file_path, relative, mtime, size) in collection.files_to_extract {
-        match extractor.extract_all(&[file_path.clone()]) {
+    for mut entry in collection.files_to_extract {
+        match extractor.extract_all(&[entry.source_path.clone()]) {
             Ok(units) => {
                 result.extracted_count += 1;
+
+                let relative = entry
+                    .source_path
+                    .strip_prefix(store.root())
+                    .unwrap_or(&entry.source_path)
+                    .to_path_buf();
 
                 // For symbol filter, check if any unit matches
                 if let CheckFilter::Symbol(symbol_id) = filter {
@@ -368,19 +377,17 @@ fn walk_and_extract_units(
                 }
 
                 if save {
-                    result.entries_to_save.push(build_cache_entry(
-                        &relative,
-                        mtime,
-                        size,
-                        units.clone(),
-                    ));
+                    entry.source_path = relative;
+                    entry.units = units.clone();
+                    entry.cached_at = now_timestamp();
+                    result.entries_to_save.push(entry);
                 }
                 result.units.extend(units);
             }
             Err(e) => {
                 eprintln!(
                     "Warning: Failed to extract {}: {}",
-                    file_path.display(),
+                    entry.source_path.display(),
                     e
                 );
             }
@@ -400,23 +407,6 @@ fn passes_path_filter(file_path: &Path, filter: &CheckFilter) -> bool {
         CheckFilter::Symbol(_) | CheckFilter::None => true,
     }
 }
-
-/// Build a cache entry for a file
-fn build_cache_entry(
-    relative: &Path,
-    mtime: u64,
-    size: u64,
-    units: Vec<Unit>,
-) -> FileCacheEntry {
-    FileCacheEntry {
-        source_path: relative.to_path_buf(),
-        mtime,
-        size,
-        units,
-        cached_at: now_timestamp(),
-    }
-}
-
 /// Save cache entries based on filter type
 fn save_cache_entries(
     store: &CacheStore,
