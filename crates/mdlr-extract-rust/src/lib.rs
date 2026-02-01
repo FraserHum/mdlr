@@ -1,4 +1,5 @@
 mod extractor;
+mod field_access;
 pub mod resolve;
 
 pub use extractor::RustExtractor;

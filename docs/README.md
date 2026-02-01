@@ -29,6 +29,10 @@ A modularity analyzer for code. Uses tree-sitter to parse source files, builds a
 - [Supported Languages](reference/languages.md)
 - [Cache System](reference/cache.md)
 
+### Roadmap
+
+- [Ignored Metrics](roadmap/ignored-metrics.md) - false positives and accepted design decisions
+
 ## License
 
 MIT
