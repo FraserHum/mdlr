@@ -52,15 +52,28 @@ mdlr metrics get cyclomatic
 7. Update or add tests as needed to cover your changes
 8. If you add a new metric, CLI command, or language support, update the relevant documentation as specified in CLAUDE.md
 
-## Important: Consider Architecture
+## Important: Choose the Best Fix
 
-When evaluating alternatives, consider the **big picture architecture** of the codebase. A function or file may be large or complex due to deliberate architectural decisions, not just organic growth.
+When fixing a modularity issue, there are often multiple valid approaches. Think critically about which solution produces the cleanest result:
 
-Before proposing to split a large function or restructure code:
+- **Splitting**: Extract part of a function/struct into a helper. Good when there's a clear sub-responsibility.
+- **Restructuring**: Redesign the approach so the complexity isn't needed. Often the best solution.
+- **Consolidating**: Sometimes code is scattered and should be unified before being split differently.
 
-- **Understand why it's structured this way** - Is there a design pattern, performance reason, or domain constraint?
-- **Evaluate if splitting helps or hurts** - Sometimes a large function that does one thing coherently is better than scattered pieces
-- **Consider downstream impact** - Will this change ripple through the codebase in unexpected ways?
-- **Look for root causes** - A high metric might be a symptom of a deeper architectural issue that splitting won't solve
+For example, a large function might be fixed by:
+1. Extracting helpers (reduces size but adds indirection)
+2. Using a different algorithm that's inherently simpler
+3. Moving some logic to callers where it belongs
+4. Introducing a data structure that eliminates branching
 
-The goal is improved modularity, not just lower numbers. A refactor that fragments related logic or introduces unnecessary indirection is worse than leaving well-structured but large code alone.
+Pick the approach that results in the cleanest, most maintainable code—not just the one that lowers the metric fastest.
+
+## False Positives
+
+As a **last resort**, if a metric flag is genuinely a false positive that cannot be improved through any refactoring, you can suppress it:
+
+```bash
+mdlr ignore <metric> "<symbol>"
+```
+
+Only use this after exhausting other options. Most high metrics indicate real opportunities for improvement.
