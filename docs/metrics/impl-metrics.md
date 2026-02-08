@@ -47,39 +47,35 @@ Counts how many traits each type implements.
 
 **Why it matters:** Types implementing many traits may have unclear responsibilities or be trying to satisfy too many interfaces. This can indicate interface pollution.
 
-### LCOM (Lack of Cohesion of Methods)
+### LCOM4 (Lack of Cohesion of Methods)
 
-Measures how cohesive an impl is based on shared field access between methods.
+Measures how cohesive an impl is by counting connected components in a method graph.
 
-LCOM compares method pairs:
-- **Cohesive pair**: Two methods that both access at least one common field
-- **Incohesive pair**: Two methods that share no field access
+LCOM4 builds an undirected graph where:
+- **Nodes** are methods of the struct
+- **Edges** connect two methods if they share access to a common field OR one calls the other
 
-The metric is computed as:
-```
-LCOM = max(0, incohesive_pairs - cohesive_pairs) / total_pairs
-```
+LCOM4 = the number of connected components in this graph.
 
-Normalized to 0-1 where:
-- **0** = Perfectly cohesive (all methods work on the same data)
-- **1** = Completely incohesive (no methods share data)
+- **1** = All methods are related (cohesive)
+- **2+** = The struct has unrelated groups of methods and could be split
 
 | Statistic | Description |
 |-----------|-------------|
-| max | Highest LCOM (least cohesive impl) |
-| mean | Average LCOM across impls |
+| max | Highest LCOM4 (least cohesive impl) |
+| mean | Average LCOM4 across impls |
 
 **Default thresholds:**
 
 | Bucket | Threshold |
 |--------|-----------|
-| Excellent | < 0.2 |
-| Good | < 0.4 |
-| Fair | < 0.6 |
-| Poor | < 0.8 |
-| Critical | >= 0.8 |
+| Excellent | < 2 |
+| Good | < 3 |
+| Fair | < 4 |
+| Poor | < 5 |
+| Critical | >= 5 |
 
-**Why it matters:** High LCOM indicates methods in an impl don't work together on shared data. This suggests the impl might be doing unrelated things and should be split.
+**Why it matters:** LCOM4 >= 2 means the struct contains unrelated groups of methods that don't share state or call each other. Each connected component could potentially be its own struct.
 
 ## Example Output
 
@@ -89,7 +85,7 @@ Impl Metrics
 
 Methods/Impl: max=17, mean=2.1, p90=5
 Traits/Type:  max=2, mean=1.1
-LCOM:         max=1.00, mean=0.18
+LCOM4:        max=3, mean=1.2
 
 Largest Impls:
   impl CacheStore (17 methods)
@@ -98,17 +94,17 @@ Largest Impls:
 Types with Many Traits:
   Config (3 traits)
 
-Least Cohesive Impls (high LCOM):
-  impl ComplexityMetrics (LCOM=1.00)
-  impl CacheStore (LCOM=0.84)
+Least Cohesive Impls (LCOM4 >= 2):
+  impl ComplexityMetrics (LCOM4=3, 3 connected components)
+  impl CacheStore (LCOM4=2, 2 connected components)
 ```
 
 ## Interpretation
 
 - **Large impls (many methods)**: Consider the Single Responsibility Principle. Can this be split into multiple focused types?
 - **Many traits per type**: Is this type trying to do too much? Could some traits be combined or the type split?
-- **High LCOM**: Methods aren't working on shared data. Either:
-  - The impl should be split into cohesive groups
+- **LCOM4 >= 2**: The impl has disconnected groups of methods. Either:
+  - The impl should be split into cohesive groups (one per connected component)
   - Methods are stateless utilities (which is fine)
   - Field tracking may be incomplete (check if methods access fields through nested calls)
 
@@ -129,19 +125,20 @@ thresholds:
     poor: 12
 
   lcom:
-    excellent: 0.2
-    good: 0.4
-    fair: 0.6
-    poor: 0.8
+    excellent: 2
+    good: 3
+    fair: 4
+    poor: 5
 ```
 
-## Field Access Tracking
+## Method Connectivity Tracking
 
-LCOM requires tracking which fields each method reads and writes. The extractor tracks:
+LCOM4 connects methods that share field access or call each other. The extractor tracks:
 
 - `self.field` read access
 - `self.field = value` write access
+- Method-to-method calls within the same struct
 
 Limitations:
-- Field access through method calls is not tracked
+- Field access through nested method calls is not tracked
 - Field access in closures may not be attributed correctly

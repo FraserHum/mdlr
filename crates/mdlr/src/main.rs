@@ -16,8 +16,8 @@ mod tag_commands;
 mod walk;
 
 use cache::{CacheStore, FileCacheEntry, Ignores, now_timestamp};
-use git::GitChangeDetector;
 use cli::{Cli, Command, MetricsCommand, OutputFormat};
+use git::GitChangeDetector;
 use json_output::{
     build_bucketed_json, build_complexity_json, build_fan_metrics_json,
     build_file_loc_json, build_semantic_tags_json, build_struct_json,
@@ -89,7 +89,7 @@ fn get_metric_descriptions() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "lcom",
-            "Lack of Cohesion of Methods. High values indicate methods don't share state, suggesting the struct could be split.",
+            "Lack of Cohesion of Methods (LCOM4). Counts connected components of methods sharing fields or calls. 1 = cohesive, 2+ = struct has unrelated groups and could be split.",
         ),
         (
             "file_loc",
@@ -339,7 +339,8 @@ fn walk_and_extract_units(
     git_changed: &HashSet<PathBuf>,
 ) -> Result<WalkResult> {
     // First pass: collect files and load from cache
-    let collection = collect_files_to_process(walker, filter, store, git_changed)?;
+    let collection =
+        collect_files_to_process(walker, filter, store, git_changed)?;
 
     let mut result = WalkResult {
         units: collection.cached_units,
@@ -670,7 +671,7 @@ fn build_symbol_json(
         .iter()
         .find(|(name, _)| name == symbol_id)
     {
-        let bucket = config.thresholds.lcom.evaluate(*value);
+        let bucket = config.thresholds.lcom.evaluate(*value as f64);
         metrics.insert(
             "lcom".to_string(),
             serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
@@ -694,8 +695,10 @@ fn handle_check(
     let ctx = CheckContext::new()?;
 
     // Initialize git-based change detection
-    let git_detector =
-        GitChangeDetector::open(ctx.store.root(), &ctx.config.git.main_branch)?;
+    let git_detector = GitChangeDetector::open(
+        ctx.store.root(),
+        &ctx.config.git.main_branch,
+    )?;
     let git_changed = git_detector.detect_changes(
         base.as_deref(),
         ctx.config.git.base_commit.as_deref(),
@@ -801,6 +804,7 @@ const VALID_METRICS: &[&str] = &[
     "file_loc",
 ];
 
+// TODO: Make it so that agents cannot ignore, but humans can
 fn handle_ignore(
     metric: Option<String>,
     symbol: Option<String>,

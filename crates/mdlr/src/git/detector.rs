@@ -41,7 +41,8 @@ impl GitChangeDetector {
         base_override: Option<&str>,
         config_base_commit: Option<&str>,
     ) -> Result<HashSet<PathBuf>> {
-        let base_ref = self.resolve_base_ref(base_override, config_base_commit)?;
+        let base_ref =
+            self.resolve_base_ref(base_override, config_base_commit)?;
 
         let mut changed = self.get_changed_files(&base_ref)?;
         let uncommitted = self.get_uncommitted_files()?;
@@ -114,9 +115,10 @@ impl GitChangeDetector {
 
     /// Gets files changed between base_ref and HEAD.
     fn get_changed_files(&self, base_ref: &str) -> Result<HashSet<PathBuf>> {
-        let base_obj = self.repo.revparse_single(base_ref).with_context(|| {
-            format!("Base ref '{}' not found", base_ref)
-        })?;
+        let base_obj = self
+            .repo
+            .revparse_single(base_ref)
+            .with_context(|| format!("Base ref '{}' not found", base_ref))?;
         let base_commit = base_obj.peel_to_commit().with_context(|| {
             format!("'{}' does not point to a commit", base_ref)
         })?;
@@ -152,8 +154,7 @@ impl GitChangeDetector {
     /// Gets files with uncommitted changes (staged + unstaged).
     fn get_uncommitted_files(&self) -> Result<HashSet<PathBuf>> {
         let mut opts = StatusOptions::new();
-        opts.include_untracked(true)
-            .recurse_untracked_dirs(true);
+        opts.include_untracked(true).recurse_untracked_dirs(true);
 
         let statuses = self.repo.statuses(Some(&mut opts))?;
         let repo_root = self.root()?;

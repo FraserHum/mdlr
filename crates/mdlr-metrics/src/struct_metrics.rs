@@ -21,10 +21,10 @@ pub struct MethodsPerStruct {
 
 #[derive(Debug, Clone)]
 pub struct LcomMetrics {
-    pub max: f64,
+    pub max: usize,
     pub mean: f64,
-    /// Structs sorted by LCOM descending (higher = less cohesive)
-    pub distribution: Vec<(String, f64)>,
+    /// Structs sorted by LCOM4 descending (higher = more connected components = less cohesive)
+    pub distribution: Vec<(String, usize)>,
 }
 
 impl StructMetrics {
@@ -84,48 +84,93 @@ fn compute_methods_per_struct(graph: &Graph) -> MethodsPerStruct {
     MethodsPerStruct { max, mean, p90, distribution }
 }
 
-/// Compute LCOM for a single struct.
-/// Returns the normalized LCOM value (0.0 = cohesive, 1.0 = incohesive).
-fn compute_struct_lcom(methods: &[&mdlr_core::Unit]) -> f64 {
-    if methods.len() < 2 {
-        return 0.0;
+/// Compute LCOM4 for a single struct using connected components.
+///
+/// LCOM4 builds an undirected graph where methods are nodes. Two methods are
+/// connected if they share access to a common field OR one calls the other.
+/// LCOM4 = number of connected components in this graph.
+///
+/// - 0 = no methods
+/// - 1 = cohesive (all methods are related)
+/// - ≥2 = struct has unrelated groups of methods and could be split
+fn compute_struct_lcom4(methods: &[&mdlr_core::Unit]) -> usize {
+    if methods.is_empty() {
+        return 0;
+    }
+    if methods.len() == 1 {
+        return 1;
     }
 
-    // Count pairs of methods that share fields vs don't share
-    let mut shares_field = 0;
-    let mut no_shared_field = 0;
+    let n = methods.len();
 
-    for i in 0..methods.len() {
-        for j in (i + 1)..methods.len() {
-            let fields_i: HashSet<_> = methods[i]
-                .reads
-                .iter()
-                .chain(methods[i].writes.iter())
-                .collect();
-            let fields_j: HashSet<_> = methods[j]
-                .reads
-                .iter()
-                .chain(methods[j].writes.iter())
-                .collect();
+    // Union-Find
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut rank: Vec<usize> = vec![0; n];
 
-            if fields_i.intersection(&fields_j).next().is_some() {
-                shares_field += 1;
+    fn find(parent: &mut Vec<usize>, i: usize) -> usize {
+        if parent[i] != i {
+            parent[i] = find(parent, parent[i]);
+        }
+        parent[i]
+    }
+
+    fn union(
+        parent: &mut Vec<usize>,
+        rank: &mut Vec<usize>,
+        i: usize,
+        j: usize,
+    ) {
+        let ri = find(parent, i);
+        let rj = find(parent, j);
+        if ri != rj {
+            if rank[ri] < rank[rj] {
+                parent[ri] = rj;
+            } else if rank[ri] > rank[rj] {
+                parent[rj] = ri;
             } else {
-                no_shared_field += 1;
+                parent[rj] = ri;
+                rank[ri] += 1;
             }
         }
     }
 
-    // LCOM = max(0, P - Q) where P = pairs not sharing, Q = pairs sharing
-    let lcom = if no_shared_field > shares_field {
-        (no_shared_field - shares_field) as f64
-    } else {
-        0.0
-    };
+    // Map each field to the method indices that access it
+    let mut field_to_methods: HashMap<&String, Vec<usize>> = HashMap::new();
+    for (idx, method) in methods.iter().enumerate() {
+        for field in method.reads.iter().chain(method.writes.iter()) {
+            field_to_methods.entry(field).or_default().push(idx);
+        }
+    }
 
-    // Normalize by total pairs for comparison
-    let total_pairs = (methods.len() * (methods.len() - 1)) / 2;
-    if total_pairs > 0 { lcom / total_pairs as f64 } else { 0.0 }
+    // Connect methods that share fields
+    for method_indices in field_to_methods.values() {
+        for window in method_indices.windows(2) {
+            union(&mut parent, &mut rank, window[0], window[1]);
+        }
+    }
+
+    // Connect methods that call each other (within this struct)
+    let method_id_to_idx: HashMap<&str, usize> = methods
+        .iter()
+        .enumerate()
+        .map(|(idx, m)| (m.id.as_str(), idx))
+        .collect();
+
+    for (idx, method) in methods.iter().enumerate() {
+        for call in &method.calls {
+            if let Some(&called_idx) = method_id_to_idx.get(call.as_str()) {
+                union(&mut parent, &mut rank, idx, called_idx);
+            }
+        }
+    }
+
+    // Count connected components
+    let mut roots: HashSet<usize> = HashSet::new();
+    for i in 0..n {
+        roots.insert(find(&mut parent, i));
+    }
+
+    roots.len()
 }
 
 fn compute_lcom(graph: &Graph) -> LcomMetrics {
@@ -141,28 +186,23 @@ fn compute_lcom(graph: &Graph) -> LcomMetrics {
         }
     }
 
-    let lcom_values: HashMap<String, f64> = struct_methods
+    let lcom_values: HashMap<String, usize> = struct_methods
         .into_iter()
-        .map(|(struct_id, methods)| (struct_id, compute_struct_lcom(&methods)))
+        .map(|(struct_id, methods)| {
+            (struct_id, compute_struct_lcom4(&methods))
+        })
         .collect();
 
     if lcom_values.is_empty() {
-        return LcomMetrics { max: 0.0, mean: 0.0, distribution: vec![] };
+        return LcomMetrics { max: 0, mean: 0.0, distribution: vec![] };
     }
 
-    let max = lcom_values
-        .values()
-        .copied()
-        .fold(0.0, |a, b| if b > a { b } else { a });
-    let sum: f64 = lcom_values.values().sum();
-    let mean = sum / lcom_values.len() as f64;
+    let max = lcom_values.values().copied().max().unwrap_or(0);
+    let sum: usize = lcom_values.values().sum();
+    let mean = sum as f64 / lcom_values.len() as f64;
 
     let mut distribution: Vec<_> = lcom_values.into_iter().collect();
-    distribution.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
+    distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     LcomMetrics { max, mean, distribution }
 }
@@ -183,7 +223,7 @@ impl std::fmt::Display for StructMetrics {
 
         writeln!(
             f,
-            "LCOM:           max={:.2}, mean={:.2}",
+            "LCOM4:          max={}, mean={:.1}",
             self.lcom.max, self.lcom.mean
         )?;
 
@@ -204,20 +244,24 @@ impl std::fmt::Display for StructMetrics {
             }
         }
 
-        // Show least cohesive structs
+        // Show least cohesive structs (LCOM4 >= 2 means should be split)
         let incohesive: Vec<_> = self
             .lcom
             .distribution
             .iter()
-            .filter(|(_, lcom)| *lcom > 0.5)
+            .filter(|(_, lcom4)| *lcom4 >= 2)
             .take(10)
             .collect();
 
         if !incohesive.is_empty() {
             writeln!(f)?;
-            writeln!(f, "Least Cohesive Structs (high LCOM):")?;
-            for (name, lcom) in incohesive {
-                writeln!(f, "  {} (LCOM={:.2})", name, lcom)?;
+            writeln!(f, "Least Cohesive Structs (LCOM4 >= 2):")?;
+            for (name, lcom4) in incohesive {
+                writeln!(
+                    f,
+                    "  {} (LCOM4={}, {} connected components)",
+                    name, lcom4, lcom4
+                )?;
             }
         }
 
@@ -296,31 +340,76 @@ mod tests {
     }
 
     #[test]
-    fn test_lcom_cohesive() {
+    fn test_lcom4_cohesive() {
         let mut graph = Graph::new();
         graph.add_unit(make_struct("Foo"));
-        // Both methods access the same field - cohesive
+        // Both methods access the same field - one connected component
         graph.add_unit(make_method("Foo::get_x", "Foo", vec!["x"], vec![]));
         graph.add_unit(make_method("Foo::set_x", "Foo", vec![], vec!["x"]));
 
         let metrics = StructMetrics::compute(&graph);
 
-        // Methods share field access, so LCOM should be 0
-        assert_eq!(metrics.lcom.max, 0.0);
+        // Methods share field "x", so LCOM4 = 1 (one connected component)
+        assert_eq!(metrics.lcom.max, 1);
     }
 
     #[test]
-    fn test_lcom_incohesive() {
+    fn test_lcom4_incohesive() {
         let mut graph = Graph::new();
         graph.add_unit(make_struct("Foo"));
-        // Methods access different fields - incohesive
+        // Methods access different fields - three disconnected components
         graph.add_unit(make_method("Foo::get_x", "Foo", vec!["x"], vec![]));
         graph.add_unit(make_method("Foo::get_y", "Foo", vec!["y"], vec![]));
         graph.add_unit(make_method("Foo::get_z", "Foo", vec!["z"], vec![]));
 
         let metrics = StructMetrics::compute(&graph);
 
-        // No methods share field access, so LCOM should be > 0
-        assert!(metrics.lcom.max > 0.0);
+        // No methods share fields, so LCOM4 = 3 (three connected components)
+        assert_eq!(metrics.lcom.max, 3);
+    }
+
+    #[test]
+    fn test_lcom4_connected_via_calls() {
+        let mut graph = Graph::new();
+        graph.add_unit(make_struct("Foo"));
+        // get_x and get_y access different fields but validate calls get_x
+        let mut validate =
+            make_method("Foo::validate", "Foo", vec!["y"], vec![]);
+        validate.calls = vec!["Foo::get_x".to_string()];
+        graph.add_unit(make_method("Foo::get_x", "Foo", vec!["x"], vec![]));
+        graph.add_unit(validate);
+
+        let metrics = StructMetrics::compute(&graph);
+
+        // validate calls get_x, so they're connected → LCOM4 = 1
+        assert_eq!(metrics.lcom.max, 1);
+    }
+
+    #[test]
+    fn test_lcom4_single_method() {
+        let mut graph = Graph::new();
+        graph.add_unit(make_struct("Foo"));
+        graph.add_unit(make_method("Foo::run", "Foo", vec!["x"], vec![]));
+
+        let metrics = StructMetrics::compute(&graph);
+
+        // Single method → LCOM4 = 1
+        assert_eq!(metrics.lcom.max, 1);
+    }
+
+    #[test]
+    fn test_lcom4_mixed() {
+        let mut graph = Graph::new();
+        graph.add_unit(make_struct("Foo"));
+        // Group 1: get_x and set_x share field "x"
+        graph.add_unit(make_method("Foo::get_x", "Foo", vec!["x"], vec![]));
+        graph.add_unit(make_method("Foo::set_x", "Foo", vec![], vec!["x"]));
+        // Group 2: get_y is isolated
+        graph.add_unit(make_method("Foo::get_y", "Foo", vec!["y"], vec![]));
+
+        let metrics = StructMetrics::compute(&graph);
+
+        // Two connected components: {get_x, set_x} and {get_y}
+        assert_eq!(metrics.lcom.max, 2);
     }
 }

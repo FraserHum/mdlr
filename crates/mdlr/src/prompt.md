@@ -42,5 +42,5 @@ mdlr metrics get cyclomatic
 - **function_size**: Lines of code in a function. High = hard to understand/test
 - **file_loc**: Lines of code in a file. High = hard to navigate/maintain
 - **cyclomatic**: Branch complexity. High = hard to test/maintain
-- **lcom**: Lack of cohesion. High = struct should be split
+- **lcom**: LCOM4 - connected components of methods sharing fields/calls. 1 = cohesive, 2+ = struct should be split
 - **methods_per_struct**: Methods in a struct. High = too many responsibilities

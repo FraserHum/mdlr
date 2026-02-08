@@ -250,13 +250,16 @@ pub fn collect_metric_rows(
         hubs: &m.structural.hubs,
     };
 
-    // Float metrics
-    let float_specs = [FloatMetricSpec {
+    // LCOM4 (integer metric: connected components)
+    let lcom_spec = IntMetricSpec {
         name: "lcom",
         distribution: &m.struct_metrics.lcom.distribution,
         thresholds: &t.lcom,
-        min_value: 0.0,
-    }];
+        min_value: 0,
+    };
+
+    // Float metrics (currently none)
+    let float_specs: [FloatMetricSpec; 0] = [];
 
     // Handle symbol filter mode separately (no global sorting)
     if let Some(filter) = symbol_filter {
@@ -265,6 +268,7 @@ pub fn collect_metric_rows(
             spec.collect_filtered(&mut rows, filter);
         }
         fan_in_spec.collect_filtered(&mut rows, filter);
+        lcom_spec.collect_filtered(&mut rows, filter);
         for spec in &float_specs {
             spec.collect_filtered(&mut rows, filter);
         }
@@ -281,6 +285,7 @@ pub fn collect_metric_rows(
         spec.collect_all(&mut scored_rows);
     }
     fan_in_spec.collect_all(&mut scored_rows);
+    lcom_spec.collect_all(&mut scored_rows);
     for spec in &float_specs {
         spec.collect_all(&mut scored_rows);
     }

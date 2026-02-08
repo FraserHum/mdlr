@@ -95,7 +95,7 @@ pub fn build_struct_json(struct_metrics: &StructMetrics) -> serde_json::Value {
         .lcom
         .distribution
         .iter()
-        .map(|(id, lcom)| serde_json::json!({"id": id, "lcom": lcom}))
+        .map(|(id, lcom4)| serde_json::json!({"id": id, "lcom4": lcom4}))
         .collect();
 
     serde_json::json!({

@@ -157,9 +157,9 @@ mod defaults {
         poor: 25.0,
     };
 
-    // LCOM is normalized 0-1, higher = less cohesive
+    // LCOM4 = connected components. 1 = cohesive, 2+ = should split
     pub const LCOM: MetricThresholds =
-        MetricThresholds { excellent: 0.2, good: 0.4, fair: 0.6, poor: 0.8 };
+        MetricThresholds { excellent: 2.0, good: 3.0, fair: 4.0, poor: 5.0 };
 
     pub const FILE_LOC: MetricThresholds = MetricThresholds {
         excellent: 200.0,

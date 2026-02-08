@@ -126,7 +126,6 @@ impl CacheStore {
         })?;
         Ok(())
     }
-
 }
 
 /// Get current timestamp as seconds since UNIX epoch.
