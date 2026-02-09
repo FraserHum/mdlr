@@ -26,8 +26,6 @@ These structs have multiple constructors or factory methods that don't read fiel
 | Symbol | Reason |
 |--------|--------|
 | `mdlr::walk::SourceWalker` | Simple struct with 1 field. `new` constructs, `walk` uses the field. Only 2 methods, so LCOM is 1.0 despite correct design. |
-| `mdlr-extract-rust::extractor::RustExtractor` | Multiple constructors (`new`, `discover`, `new_without_context`) plus helper methods. Only `extract_source` and `resolution_context` read the field. |
-| `mdlr-extract-rust::resolve::cargo::CargoWorkspace` | Three constructors (`discover`, `from_cargo_files`, `from_manifest`) and two accessors (`find_crate`, `crate_names`). The `root` field is only accessed externally. |
 
 ### Service/Store Structs
 
@@ -36,12 +34,6 @@ These structs manage multiple related resources where different methods operate 
 | Symbol | Reason |
 |--------|--------|
 | `mdlr::cache::store::CacheStore` | Manages cache directory, index file, and tags files. Methods like `load_entry`/`save_entry` use `cache_dir`, while `load_index`/`save_index` use `index_path`. This separation is intentional. |
-
-## Methods Per Struct
-
-| Symbol | Value | Reason |
-|--------|-------|--------|
-| `mdlr-extract-rust::resolve::resolve::ResolutionContext` | 32 | Methods are already split across 3 files by responsibility (core resolution, call resolution, import resolution). Further splitting would require significant architectural changes. The struct is cohesive (LCOM 0.73) - methods share state appropriately. |
 
 ## Recommendations
 

@@ -10,7 +10,6 @@ path = "src/main.rs"
 [dependencies]
 mdlr-core = { workspace = true }
 mdlr-metrics = { workspace = true }
-mdlr-extract-rust = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -20,7 +19,7 @@ chrono = { workspace = true }
 dirs = { workspace = true }
 ignore = { workspace = true }
 tabwriter = { workspace = true }
+tempfile = { workspace = true }
 git2 = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }

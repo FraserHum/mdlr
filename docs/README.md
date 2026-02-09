@@ -1,6 +1,6 @@
 # mdlr Documentation
 
-A modularity analyzer for code. Uses tree-sitter to parse source files, builds an intermediate representation (IR) graph of code units and their relationships, and computes metrics for cohesion/coupling analysis.
+A modularity analyzer for code. Uses the Rust compiler's HIR (High-level Intermediate Representation) to parse source files with full type resolution, builds a graph of code units and their relationships, and computes metrics for cohesion/coupling analysis.
 
 ## Documentation
 
@@ -28,6 +28,7 @@ A modularity analyzer for code. Uses tree-sitter to parse source files, builds a
 - [Graph Structure](reference/graph.md)
 - [Supported Languages](reference/languages.md)
 - [Cache System](reference/cache.md)
+- [HIR Extractor](reference/hir-extract.md) - compiler-based Rust extraction with full type resolution
 
 ### Roadmap
 

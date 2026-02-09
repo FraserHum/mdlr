@@ -42,7 +42,7 @@ mdlr computes structural metrics that help you understand the modularity and cou
 
 ## How Metrics Are Computed
 
-1. **Graph extraction**: Source files are parsed using tree-sitter to identify code units (functions, structs, traits, etc.)
+1. **Graph extraction**: Source files are parsed using the Rust compiler's HIR to identify code units (functions, structs, traits, etc.)
 
 2. **Edge detection**: Relationships between units are identified (calls, reads, writes)
 

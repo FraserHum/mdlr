@@ -1,6 +1,6 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -23,7 +23,6 @@ use json_output::{
     build_file_loc_json, build_semantic_tags_json, build_struct_json,
 };
 use mdlr_core::{Graph, Unit, build as build_graph};
-use mdlr_extract_rust::RustExtractor;
 use mdlr_metrics::{
     BucketedMetrics, ComplexityMetrics, FileLocMetrics, StructMetrics,
     StructuralMetrics, TagMetrics, Thresholds,
@@ -355,51 +354,170 @@ fn walk_and_extract_units(
         return Ok(result);
     }
 
-    // Create extractor with all files (it will find Cargo.toml files for workspace discovery)
-    let extractor = RustExtractor::new(&collection.all_files)?;
+    // Shell out to mdlr-extract-rust for extraction
+    let extracted = extract_rust(&collection.files_to_extract, store.root())?;
 
-    // Extract from each file using the shared resolution context
-    for entry in collection.files_to_extract {
-        match extractor.extract_all(&[entry.source_path.clone()]) {
-            Ok(units) => {
-                result.extracted_count += 1;
+    for (entry, file_entry) in
+        collection.files_to_extract.iter().zip(extracted.iter())
+    {
+        let units = match file_entry {
+            Some(fe) => &fe.units,
+            None => continue,
+        };
 
-                let relative = entry
-                    .source_path
-                    .strip_prefix(store.root())
-                    .unwrap_or(&entry.source_path)
-                    .to_path_buf();
+        result.extracted_count += 1;
 
-                // For symbol filter, check if any unit matches
-                if let CheckFilter::Symbol(symbol_id) = filter {
-                    if units.iter().any(|u| u.id == *symbol_id) {
-                        result
-                            .files_with_matching_symbols
-                            .insert(relative.clone());
-                    }
-                }
+        let relative = entry
+            .source_path
+            .strip_prefix(store.root())
+            .unwrap_or(&entry.source_path)
+            .to_path_buf();
 
-                if save {
-                    let save_entry = FileCacheEntry {
-                        source_path: relative,
-                        units: units.clone(),
-                        cached_at: now_timestamp(),
-                    };
-                    result.entries_to_save.push(save_entry);
-                }
-                result.units.extend(units);
-            }
-            Err(e) => {
-                eprintln!(
-                    "Warning: Failed to extract {}: {}",
-                    entry.source_path.display(),
-                    e
-                );
+        // For symbol filter, check if any unit matches
+        if let CheckFilter::Symbol(symbol_id) = filter {
+            if units.iter().any(|u| u.id == *symbol_id) {
+                result.files_with_matching_symbols.insert(relative.clone());
             }
         }
+
+        if save {
+            let save_entry = FileCacheEntry {
+                source_path: relative,
+                units: units.clone(),
+                cached_at: now_timestamp(),
+            };
+            result.entries_to_save.push(save_entry);
+        }
+        result.units.extend(units.clone());
     }
 
     Ok(result)
+}
+
+/// Find the `mdlr-extract-rust` binary, checking next to our own binary first.
+fn find_extract_rust_binary() -> Result<PathBuf> {
+    if let Ok(current_exe) = env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            let sibling = dir.join("mdlr-extract-rust");
+            if sibling.exists() {
+                return Ok(sibling);
+            }
+        }
+    }
+    // Fall back to PATH
+    Ok(PathBuf::from("mdlr-extract-rust"))
+}
+
+/// Discover which cargo packages contain files that need extraction.
+fn discover_packages_for_files(
+    files: &[FileCacheEntry],
+    workspace_root: &Path,
+) -> Result<Vec<String>> {
+    let output = std::process::Command::new("cargo")
+        .args(["metadata", "--format-version=1", "--no-deps"])
+        .current_dir(workspace_root)
+        .output()
+        .context("Failed to run cargo metadata")?;
+
+    if !output.status.success() {
+        bail!(
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout)
+            .context("Failed to parse cargo metadata")?;
+
+    let packages = metadata["packages"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("No packages in cargo metadata"))?;
+
+    let mut needed = Vec::new();
+    for package in packages {
+        let name = package["name"].as_str().unwrap_or_default();
+        let manifest_path =
+            package["manifest_path"].as_str().unwrap_or_default();
+        let package_root =
+            Path::new(manifest_path).parent().unwrap_or(Path::new(""));
+
+        let has_files = files
+            .iter()
+            .any(|entry| entry.source_path.starts_with(package_root));
+
+        if has_files {
+            needed.push(name.to_string());
+        }
+    }
+
+    Ok(needed)
+}
+
+/// Shell out to `mdlr-extract-rust` via `cargo check` to extract units.
+///
+/// Creates a mapping file, runs `cargo check` with `RUSTC_WRAPPER` for each
+/// package that has files needing extraction, then loads the resulting JSON.
+fn extract_rust(
+    files: &[FileCacheEntry],
+    workspace_root: &Path,
+) -> Result<Vec<Option<FileCacheEntry>>> {
+    let tmp_dir = tempfile::tempdir()?;
+
+    // Build mapping: absolute source path → temp output path
+    let mut mapping: HashMap<String, String> = HashMap::new();
+    for (i, entry) in files.iter().enumerate() {
+        let source_key = entry.source_path.to_string_lossy().to_string();
+        let output_path = tmp_dir.path().join(format!("{}.json", i));
+        mapping.insert(source_key, output_path.to_string_lossy().to_string());
+    }
+
+    // Write mapping file
+    let mapping_path = tmp_dir.path().join("mapping.json");
+    std::fs::write(&mapping_path, serde_json::to_string(&mapping)?)?;
+
+    // Find mdlr-extract-rust binary
+    let extract_bin = find_extract_rust_binary()?;
+
+    // Discover which packages need extraction
+    let packages = discover_packages_for_files(files, workspace_root)?;
+
+    for package_name in &packages {
+        let output = std::process::Command::new("cargo")
+            .args(["check", "-p", package_name])
+            .env("RUSTC_WRAPPER", &extract_bin)
+            .env("MDLR_HIR_MAPPING", mapping_path.to_str().unwrap_or_default())
+            .env("MDLR_HIR_CRATE", package_name)
+            .current_dir(workspace_root)
+            .output()
+            .with_context(|| {
+                format!("Failed to run cargo check for {}", package_name)
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "Warning: extraction failed for {}: {}",
+                package_name,
+                stderr.lines().last().unwrap_or("unknown error")
+            );
+        }
+    }
+
+    // Load results from temp files
+    let mut results = Vec::with_capacity(files.len());
+    for i in 0..files.len() {
+        let output_path = tmp_dir.path().join(format!("{}.json", i));
+        if output_path.exists() {
+            let content = std::fs::read_to_string(&output_path)?;
+            let file_entry: FileCacheEntry = serde_json::from_str(&content)?;
+            results.push(Some(file_entry));
+        } else {
+            results.push(None);
+        }
+    }
+
+    Ok(results)
 }
 
 /// Check if a file path passes the filter
@@ -446,9 +564,7 @@ fn compute_all_metrics(
     store: &CacheStore,
     config: &config::Config,
 ) -> ComputedMetrics {
-    // Build graph without resolution context for now
-    // (resolution is already done during extraction)
-    let graph = build_graph(units, None);
+    let graph = build_graph(units);
     let structural = compute_structural(
         &graph,
         config.hub.min_fan_in,

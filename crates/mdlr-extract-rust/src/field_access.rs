@@ -1,292 +1,249 @@
-//! Field access extraction for Rust code.
-//!
-//! Extracts field reads and writes from function bodies, tracking which
-//! struct fields are accessed via `self.field` patterns.
+use rustc_hir as hir;
+use rustc_middle::ty::TyCtxt;
 
-use tree_sitter::Node;
-
-/// Extract field reads and writes from a function body.
+/// Extract field reads and writes from a function/method body.
 ///
-/// Returns (reads, writes) where each is a sorted, deduplicated list of field names
-/// accessed via `self.field` patterns.
-pub fn extract_field_access(
-    node: Node,
-    source: &str,
-) -> (Vec<String>, Vec<String>) {
+/// Detects `self.field` patterns:
+/// - Read: `self.field` in any position except assignment LHS
+/// - Write: `self.field` in assignment LHS (`=`, `+=`, etc.)
+/// - `self.method()` is NOT a field read (it's a method call)
+/// - `self.field.method()` — `field` IS a read
+pub fn extract_field_access(tcx: TyCtxt<'_>, body: &hir::Body<'_>) -> (Vec<String>, Vec<String>) {
     let mut reads = Vec::new();
     let mut writes = Vec::new();
-    collect_field_access(node, source, &mut reads, &mut writes, false);
-    reads.sort();
-    reads.dedup();
-    writes.sort();
-    writes.dedup();
+
+    visit_expr_for_fields(tcx, body.value, &mut reads, &mut writes, FieldContext::Read);
+
     (reads, writes)
 }
 
-/// Recursively collect field accesses from the AST.
-fn collect_field_access(
-    node: Node,
-    source: &str,
+/// Context for determining if a field access is a read or write.
+#[derive(Clone, Copy, PartialEq)]
+enum FieldContext {
+    Read,
+    WriteLhs,
+}
+
+fn visit_expr_for_fields<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    expr: &hir::Expr<'_>,
     reads: &mut Vec<String>,
     writes: &mut Vec<String>,
-    in_assignment_lhs: bool,
+    ctx: FieldContext,
 ) {
-    match node.kind() {
-        "field_expression" => {
-            // Check if this is self.field access
-            if let Some(value) = node.child_by_field_name("value") {
-                let value_text = node_text(value, source);
-                if value_text == "self"
-                    || value_text == "&self"
-                    || value_text == "&mut self"
-                {
-                    if let Some(field) = node.child_by_field_name("field") {
-                        let field_name = node_text(field, source);
-                        if in_assignment_lhs {
+    match &expr.kind {
+        // self.field — check context for read vs write
+        hir::ExprKind::Field(base, ident) => {
+            if is_self_expr(base) {
+                let field_name = ident.as_str().to_string();
+                match ctx {
+                    FieldContext::WriteLhs => {
+                        if !writes.contains(&field_name) {
                             writes.push(field_name);
-                        } else {
+                        }
+                    }
+                    FieldContext::Read => {
+                        if !reads.contains(&field_name) {
                             reads.push(field_name);
                         }
                     }
                 }
+            } else {
+                // For chained access like self.field.subfield, the inner field IS a read
+                visit_expr_for_fields(tcx, base, reads, writes, FieldContext::Read);
             }
         }
-        "call_expression" => {
-            // Handle method calls carefully to distinguish:
-            // - self.method() -> NOT a field read (method call)
-            // - self.field.method() -> field IS a read (field access chained with method)
-            // - self.field.method1().method2() -> still a field read
-            if let Some(func) = node.child_by_field_name("function") {
-                // Walk down the call chain to find field accesses
-                process_call_function(
-                    func,
-                    source,
-                    reads,
-                    writes,
-                    in_assignment_lhs,
-                );
+
+        // Method call: self.method() — the receiver is NOT a field read
+        // But self.field.method() — field IS a read (handled by Field case above when
+        // the receiver is Field(self, "field"))
+        hir::ExprKind::MethodCall(_segment, receiver, args, _span) => {
+            // Don't treat the direct receiver as a write context
+            visit_expr_for_fields(tcx, receiver, reads, writes, FieldContext::Read);
+            for arg in args.iter() {
+                visit_expr_for_fields(tcx, arg, reads, writes, FieldContext::Read);
             }
-            // Always process arguments
-            if let Some(args) = node.child_by_field_name("arguments") {
-                collect_field_access(
-                    args,
-                    source,
-                    reads,
-                    writes,
-                    in_assignment_lhs,
-                );
-            }
-            return; // Don't recurse normally, we handled the relevant children
         }
-        "assignment_expression" | "compound_assignment_expr" => {
-            // Left side is a write, right side is a read
-            if let Some(left) = node.child_by_field_name("left") {
-                collect_field_access(left, source, reads, writes, true);
-            }
-            if let Some(right) = node.child_by_field_name("right") {
-                collect_field_access(right, source, reads, writes, false);
-            }
-            return; // Don't recurse normally, we handled children
+
+        // Assignment: LHS is write context
+        hir::ExprKind::Assign(lhs, rhs, _) => {
+            visit_expr_for_fields(tcx, lhs, reads, writes, FieldContext::WriteLhs);
+            visit_expr_for_fields(tcx, rhs, reads, writes, FieldContext::Read);
         }
+        hir::ExprKind::AssignOp(_, lhs, rhs) => {
+            visit_expr_for_fields(tcx, lhs, reads, writes, FieldContext::WriteLhs);
+            visit_expr_for_fields(tcx, rhs, reads, writes, FieldContext::Read);
+        }
+
+        // Function calls — visit all parts
+        hir::ExprKind::Call(func, args) => {
+            visit_expr_for_fields(tcx, func, reads, writes, FieldContext::Read);
+            for arg in args.iter() {
+                visit_expr_for_fields(tcx, arg, reads, writes, FieldContext::Read);
+            }
+        }
+
+        // Block
+        hir::ExprKind::Block(block, _) => {
+            for stmt in block.stmts {
+                visit_stmt_for_fields(tcx, stmt, reads, writes);
+            }
+            if let Some(expr) = block.expr {
+                visit_expr_for_fields(tcx, expr, reads, writes, FieldContext::Read);
+            }
+        }
+
+        // If
+        hir::ExprKind::If(cond, then_branch, else_branch) => {
+            visit_expr_for_fields(tcx, cond, reads, writes, FieldContext::Read);
+            visit_expr_for_fields(tcx, then_branch, reads, writes, FieldContext::Read);
+            if let Some(else_br) = else_branch {
+                visit_expr_for_fields(tcx, else_br, reads, writes, FieldContext::Read);
+            }
+        }
+
+        // Match
+        hir::ExprKind::Match(scrutinee, arms, _) => {
+            visit_expr_for_fields(tcx, scrutinee, reads, writes, FieldContext::Read);
+            for arm in arms.iter() {
+                if let Some(guard) = &arm.guard {
+                    visit_expr_for_fields(tcx, guard, reads, writes, FieldContext::Read);
+                }
+                visit_expr_for_fields(tcx, arm.body, reads, writes, FieldContext::Read);
+            }
+        }
+
+        // Loop
+        hir::ExprKind::Loop(block, _, _, _) => {
+            for stmt in block.stmts {
+                visit_stmt_for_fields(tcx, stmt, reads, writes);
+            }
+            if let Some(expr) = block.expr {
+                visit_expr_for_fields(tcx, expr, reads, writes, FieldContext::Read);
+            }
+        }
+
+        // Binary
+        hir::ExprKind::Binary(_, lhs, rhs) => {
+            visit_expr_for_fields(tcx, lhs, reads, writes, FieldContext::Read);
+            visit_expr_for_fields(tcx, rhs, reads, writes, FieldContext::Read);
+        }
+
+        // Unary
+        hir::ExprKind::Unary(_, operand) => {
+            visit_expr_for_fields(tcx, operand, reads, writes, FieldContext::Read);
+        }
+
+        // AddrOf / borrow
+        hir::ExprKind::AddrOf(_, _, operand) => {
+            visit_expr_for_fields(tcx, operand, reads, writes, ctx);
+        }
+
+        // Index
+        hir::ExprKind::Index(base, idx, _) => {
+            visit_expr_for_fields(tcx, base, reads, writes, ctx);
+            visit_expr_for_fields(tcx, idx, reads, writes, FieldContext::Read);
+        }
+
+        // Return / break with value
+        hir::ExprKind::Ret(Some(expr)) => {
+            visit_expr_for_fields(tcx, expr, reads, writes, FieldContext::Read);
+        }
+        hir::ExprKind::Break(_, Some(expr)) => {
+            visit_expr_for_fields(tcx, expr, reads, writes, FieldContext::Read);
+        }
+
+        // Struct literal
+        hir::ExprKind::Struct(_, fields, base) => {
+            for field in fields.iter() {
+                visit_expr_for_fields(tcx, field.expr, reads, writes, FieldContext::Read);
+            }
+            if let hir::StructTailExpr::Base(base) = base {
+                visit_expr_for_fields(tcx, base, reads, writes, FieldContext::Read);
+            }
+        }
+
+        // Tuple
+        hir::ExprKind::Tup(exprs) => {
+            for e in exprs.iter() {
+                visit_expr_for_fields(tcx, e, reads, writes, FieldContext::Read);
+            }
+        }
+
+        // Array
+        hir::ExprKind::Array(exprs) => {
+            for e in exprs.iter() {
+                visit_expr_for_fields(tcx, e, reads, writes, FieldContext::Read);
+            }
+        }
+
+        // Repeat
+        hir::ExprKind::Repeat(expr, _) => {
+            visit_expr_for_fields(tcx, expr, reads, writes, FieldContext::Read);
+        }
+
+        // Cast / Type
+        hir::ExprKind::Cast(expr, _) | hir::ExprKind::Type(expr, _) => {
+            visit_expr_for_fields(tcx, expr, reads, writes, FieldContext::Read);
+        }
+
+        // Let expression
+        hir::ExprKind::Let(let_expr) => {
+            visit_expr_for_fields(tcx, let_expr.init, reads, writes, FieldContext::Read);
+        }
+
+        // DropTemps
+        hir::ExprKind::DropTemps(expr) => {
+            visit_expr_for_fields(tcx, expr, reads, writes, FieldContext::Read);
+        }
+
+        // Yield
+        hir::ExprKind::Yield(expr, _) => {
+            visit_expr_for_fields(tcx, expr, reads, writes, FieldContext::Read);
+        }
+
+        // Closure
+        hir::ExprKind::Closure(closure) => {
+            let body = tcx.hir_body(closure.body);
+            visit_expr_for_fields(tcx, body.value, reads, writes, FieldContext::Read);
+        }
+
+        // Leaf / terminal expressions
         _ => {}
     }
-
-    for child in node.children(&mut node.walk()) {
-        collect_field_access(child, source, reads, writes, in_assignment_lhs);
-    }
 }
 
-/// Walk down the "function" part of a call expression to find self.field accesses.
-///
-/// Handles arbitrary chains like `self.field.method1().method2()`.
-fn process_call_function(
-    node: Node,
-    source: &str,
+fn visit_stmt_for_fields<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    stmt: &hir::Stmt<'_>,
     reads: &mut Vec<String>,
     writes: &mut Vec<String>,
-    in_assignment_lhs: bool,
 ) {
-    match node.kind() {
-        "field_expression" => {
-            // This is obj.method - check what obj is
-            if let Some(value) = node.child_by_field_name("value") {
-                process_call_value(
-                    value,
-                    source,
-                    reads,
-                    writes,
-                    in_assignment_lhs,
-                );
+    match &stmt.kind {
+        hir::StmtKind::Let(local) => {
+            if let Some(init) = local.init {
+                visit_expr_for_fields(tcx, init, reads, writes, FieldContext::Read);
             }
         }
-        "generic_function" => {
-            // This is obj.method::<T>() with turbofish syntax
-            // The function field contains the actual field_expression
-            if let Some(func) = node.child_by_field_name("function") {
-                process_call_function(
-                    func,
-                    source,
-                    reads,
-                    writes,
-                    in_assignment_lhs,
-                );
+        hir::StmtKind::Expr(expr) | hir::StmtKind::Semi(expr) => {
+            visit_expr_for_fields(tcx, expr, reads, writes, FieldContext::Read);
+        }
+        hir::StmtKind::Item(_) => {}
+    }
+}
+
+/// Check if an expression refers to `self`.
+fn is_self_expr(expr: &hir::Expr<'_>) -> bool {
+    match &expr.kind {
+        hir::ExprKind::Path(hir::QPath::Resolved(_, path)) => {
+            if let Some(segment) = path.segments.last() {
+                segment.ident.as_str() == "self"
+            } else {
+                false
             }
         }
-        "scoped_identifier" | "identifier" => {
-            // Direct function call like foo() - no field access
-        }
-        _ => {}
-    }
-}
-
-/// Process the value part of a field_expression in a call chain.
-fn process_call_value(
-    value: Node,
-    source: &str,
-    reads: &mut Vec<String>,
-    writes: &mut Vec<String>,
-    in_assignment_lhs: bool,
-) {
-    match value.kind() {
-        "field_expression" => {
-            // obj is itself a field access (e.g., self.field)
-            // Process it to capture the field read
-            collect_field_access(
-                value,
-                source,
-                reads,
-                writes,
-                in_assignment_lhs,
-            );
-        }
-        "call_expression" => {
-            // obj is a method call (e.g., self.method1())
-            // Recurse to find any field access in the call chain
-            if let Some(inner_func) = value.child_by_field_name("function") {
-                process_call_function(
-                    inner_func,
-                    source,
-                    reads,
-                    writes,
-                    in_assignment_lhs,
-                );
-            }
-            // Also process arguments of the inner call
-            if let Some(args) = value.child_by_field_name("arguments") {
-                collect_field_access(
-                    args,
-                    source,
-                    reads,
-                    writes,
-                    in_assignment_lhs,
-                );
-            }
-        }
-        _ => {
-            // obj is something else (just "self", a variable, etc.)
-            // No field access to capture
-        }
-    }
-}
-
-/// Get the text content of a tree-sitter node.
-fn node_text(node: Node, source: &str) -> String {
-    source[node.byte_range()].to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tree_sitter::Parser;
-
-    fn parse_and_extract(source: &str) -> (Vec<String>, Vec<String>) {
-        let mut parser = Parser::new();
-        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
-        let tree = parser.parse(source, None).unwrap();
-        extract_field_access(tree.root_node(), source)
-    }
-
-    #[test]
-    fn test_simple_field_read() {
-        let source = r#"
-impl Foo {
-    fn reader(&self) -> i32 {
-        self.x + self.y
-    }
-}
-"#;
-        let (reads, writes) = parse_and_extract(source);
-        assert!(reads.contains(&"x".to_string()));
-        assert!(reads.contains(&"y".to_string()));
-        assert!(writes.is_empty());
-    }
-
-    #[test]
-    fn test_field_write() {
-        let source = r#"
-impl Foo {
-    fn writer(&mut self) {
-        self.x = 10;
-        self.y = self.z;
-    }
-}
-"#;
-        let (reads, writes) = parse_and_extract(source);
-        assert!(writes.contains(&"x".to_string()));
-        assert!(writes.contains(&"y".to_string()));
-        assert!(reads.contains(&"z".to_string()));
-    }
-
-    #[test]
-    fn test_method_calls_not_counted() {
-        let source = r#"
-impl Foo {
-    fn caller(&self) {
-        self.do_something();
-        self.other_method(self.field);
-    }
-}
-"#;
-        let (reads, writes) = parse_and_extract(source);
-        assert_eq!(reads, vec!["field".to_string()]);
-        assert!(!reads.contains(&"do_something".to_string()));
-        assert!(!reads.contains(&"other_method".to_string()));
-        assert!(writes.is_empty());
-    }
-
-    #[test]
-    fn test_chained_field_method_call() {
-        let source = r#"
-impl Foo {
-    fn reader(&self) {
-        self.ctx.as_ref();
-        self.data.clone();
-    }
-}
-"#;
-        let (reads, _) = parse_and_extract(source);
-        assert!(reads.contains(&"ctx".to_string()));
-        assert!(reads.contains(&"data".to_string()));
-        assert!(!reads.contains(&"as_ref".to_string()));
-        assert!(!reads.contains(&"clone".to_string()));
-    }
-
-    #[test]
-    fn test_multi_chained_method_calls() {
-        let source = r#"
-impl Foo {
-    fn reader(&self) {
-        self.members.iter().find(|x| x.name == "test");
-        self.items.iter().map(|x| x.clone()).collect::<Vec<_>>();
-    }
-}
-"#;
-        let (reads, _) = parse_and_extract(source);
-        assert!(reads.contains(&"members".to_string()));
-        assert!(reads.contains(&"items".to_string()));
-        assert!(!reads.contains(&"iter".to_string()));
-        assert!(!reads.contains(&"find".to_string()));
-        assert!(!reads.contains(&"map".to_string()));
-        assert!(!reads.contains(&"collect".to_string()));
+        // Handle deref: *self
+        hir::ExprKind::Unary(hir::UnOp::Deref, inner) => is_self_expr(inner),
+        _ => false,
     }
 }

@@ -43,7 +43,7 @@ struct FileCacheEntry {
 /// For the target crate we run rustc through our callbacks to extract HIR.
 fn main() {
     if let Err(e) = run() {
-        eprintln!("mdlr-hir-extract: {e:#}");
+        eprintln!("mdlr-extract-rust: {e:#}");
         std::process::exit(1);
     }
 }

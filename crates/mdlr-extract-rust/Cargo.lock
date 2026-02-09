@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mdlr-hir-extract"
+name = "mdlr-extract-rust"
 version = "0.1.0"
 dependencies = [
  "anyhow",

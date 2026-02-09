@@ -1,6 +1,6 @@
 # Supported Languages
 
-mdlr uses tree-sitter for parsing, enabling accurate extraction of code structure.
+mdlr uses the Rust compiler's HIR (High-level Intermediate Representation) for extraction, providing fully-resolved type information.
 
 ## Currently Supported
 
@@ -10,15 +10,23 @@ mdlr uses tree-sitter for parsing, enabling accurate extraction of code structur
 
 ### Rust Extraction
 
-The Rust extractor identifies:
+The Rust extractor (`mdlr-extract-rust`) uses the compiler's HIR and identifies:
 
 - **Functions**: `fn` declarations
 - **Structs**: `struct` declarations
 - **Traits**: `trait` declarations
 - **Impl blocks**: `impl` blocks (with or without traits)
-- **Calls**: Function and method invocations
+- **Calls**: Function and method invocations (fully resolved via `typeck`)
 
-Module paths are tracked, so a function `foo` inside `mod bar` gets ID `bar::foo`.
+Key capabilities:
+- **Fully-qualified call resolution**: Trait method calls resolved to concrete implementations
+- **Accurate type inference**: Full compiler type information
+- **Macro expansion**: Fully expanded (not just surface syntax)
+- **Compiler-guaranteed correctness**: Uses the same type information as `rustc`
+
+Requires a nightly Rust toolchain with `rustc-dev` and `llvm-tools` components.
+
+See [HIR Extractor](hir-extract.md) for implementation details.
 
 ## Planned
 
@@ -30,17 +38,4 @@ Module paths are tracked, so a function `foo` inside `mod bar` gets ID `bar::foo
 
 ## Adding Language Support
 
-Language support requires implementing the `Extractor` trait:
-
-```rust
-pub trait Extractor: Send + Sync {
-    fn language(&self) -> &'static str;
-    fn extract(&self, source: &str, path: &Path) -> Result<Vec<Unit>>;
-}
-```
-
-Each extractor:
-1. Parses source using the appropriate tree-sitter grammar
-2. Walks the AST to identify units (functions, classes, etc.)
-3. Extracts relationships (calls, imports, etc.)
-4. Returns a list of `Unit` structs
+Language support requires creating a new extractor binary that outputs `FileCacheEntry`-compatible JSON. See the [HIR Extractor](hir-extract.md) for the Rust implementation as a reference.

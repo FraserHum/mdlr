@@ -34,14 +34,12 @@ Update documentation when:
 ## Project Structure
 
 ```
-src/
-├── main.rs              # CLI entry point
-├── lib.rs               # Library root
-├── cli.rs               # Clap argument parsing
-├── graph/               # Unit, Edge, Graph types and serialization
-├── session/             # Session persistence
-├── extract/             # Language extractors (tree-sitter)
-└── metrics/             # Metric computation
+crates/
+├── mdlr/                # CLI binary
+│   └── src/main.rs      # CLI entry point, HIR extraction orchestration
+├── mdlr-core/           # Core types (Unit, Edge, Graph)
+├── mdlr-metrics/        # Metric computation
+└── mdlr-extract-rust/   # RUSTC_WRAPPER binary for HIR-based extraction
 ```
 
 ## Adding Features
@@ -59,11 +57,9 @@ src/
 
 ### New Language
 
-1. Add tree-sitter dependency to `Cargo.toml`
-2. Create `src/extract/<language>.rs` implementing `Extractor` trait
-3. Register in `src/extract/mod.rs` `extractor_for_path` function
-4. Update `supported_extensions()` in `src/extract/mod.rs`
-5. Update `docs/reference/languages.md`
+1. Create a new extractor crate under `crates/` that outputs `FileCacheEntry`-compatible JSON
+2. Wire orchestration into `crates/mdlr/src/main.rs`
+3. Update `docs/reference/languages.md`
 
 ### New CLI Command
 
