@@ -404,8 +404,22 @@ fn find_extract_rust_binary() -> Result<PathBuf> {
             }
         }
     }
-    // Fall back to PATH
-    Ok(PathBuf::from("mdlr-extract-rust"))
+    // Check if it's on PATH
+    if let Ok(output) =
+        std::process::Command::new("which").arg("mdlr-extract-rust").output()
+    {
+        if output.status.success() {
+            let path =
+                String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Ok(PathBuf::from(path));
+            }
+        }
+    }
+    bail!(
+        "Could not find mdlr-extract-rust binary. \
+         Build it with: cargo install --path crates/mdlr-extract-rust"
+    );
 }
 
 /// Discover which cargo packages contain files that need extraction.
@@ -464,10 +478,16 @@ fn extract_rust(
 ) -> Result<Vec<Option<FileCacheEntry>>> {
     let tmp_dir = tempfile::tempdir()?;
 
-    // Build mapping: absolute source path → temp output path
+    // Build mapping: relative source path → temp output path
+    // Using relative paths (relative to workspace_root) so that unit.file
+    // fields in the extracted output are project-relative, not absolute.
     let mut mapping: HashMap<String, String> = HashMap::new();
     for (i, entry) in files.iter().enumerate() {
-        let source_key = entry.source_path.to_string_lossy().to_string();
+        let relative = entry
+            .source_path
+            .strip_prefix(workspace_root)
+            .unwrap_or(&entry.source_path);
+        let source_key = relative.to_string_lossy().to_string();
         let output_path = tmp_dir.path().join(format!("{}.json", i));
         mapping.insert(source_key, output_path.to_string_lossy().to_string());
     }
@@ -497,7 +517,7 @@ fn extract_rust(
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             eprintln!(
-                "Warning: extraction failed for {}: {}",
+                "Warning: HIR extraction failed for {}:\n  {}",
                 package_name,
                 stderr.lines().last().unwrap_or("unknown error")
             );
