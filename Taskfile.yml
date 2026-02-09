@@ -1,6 +1,11 @@
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
 
 version: "3"
+includes:
+  mdlr-extract-rust:
+    taskfile: ./crates/mdlr-extract-rust
+    dir: ./crates/mdlr-extract-rust
+
 tasks:
   default:
     cmds:
@@ -11,6 +16,11 @@ tasks:
     cmd: mdlr {{.CLI_ARGS}}
 
   build:
+    deps:
+      - task: mdlr-extract-rust:build
+        vars:
+          MODE: "{{.MODE}}"
+          QUIET: "{{.QUIET}}"
     vars:
       MODE: '{{.MODE | default "debug"}}'
       QUIET: '{{.QUIET | default "false"}}'
@@ -21,6 +31,9 @@ tasks:
     vars:
       QUIET: '{{.QUIET | default "false"}}'
     deps:
+      - task: mdlr-extract-rust:link
+        vars:
+          QUIET: "{{.QUIET}}"
       - task: build
         vars: { QUIET: "{{.QUIET}}" }
     dir: bin
