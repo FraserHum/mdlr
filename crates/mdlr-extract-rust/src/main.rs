@@ -176,14 +176,11 @@ impl Callbacks for HirExtractCallbacks {
         _compiler: &Compiler,
         tcx: TyCtxt<'tcx>,
     ) -> rustc_driver::Compilation {
-        // Run analysis ourselves so we can catch fatal errors from compilation
-        // failures. analysis() populates all query caches (typeck, borrow check,
-        // etc.) before checking for errors, so even if it panics via raise_fatal(),
-        // the cached results are still available for extraction.
-        let _ = rustc_driver::catch_fatal_errors(|| {
-            let _ = tcx.analysis(());
-        });
-
+        // Don't call tcx.analysis() — it raises a fatal error if the target
+        // crate has ANY compilation errors, killing the entire process.
+        // Instead, let typeck results be computed on demand per-function
+        // in calls::extract_calls(). Functions with errors get partial
+        // extraction; functions without errors get full call resolution.
         let units_by_file = visitor::extract_units(tcx, &self.mapping);
 
         let timestamp = std::time::SystemTime::now()

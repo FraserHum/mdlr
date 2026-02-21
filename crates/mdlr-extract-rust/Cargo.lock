@@ -2331,6 +2331,7 @@ dependencies = [
  "cargo",
  "cargo-util",
  "clap",
+ "libc",
  "mdlr-core",
  "serde",
  "serde_json",

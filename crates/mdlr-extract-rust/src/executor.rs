@@ -4,6 +4,7 @@ use cargo::CargoResult;
 use cargo_util::ProcessBuilder;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+use std::os::fd::AsRawFd;
 use std::sync::Mutex;
 
 use crate::HirExtractCallbacks;
@@ -95,14 +96,28 @@ impl Executor for HirExtractExecutor {
             mapping: self.mapping.clone(),
         };
 
+        // Suppress rustc's diagnostic output during compilation. The target
+        // crate may not compile cleanly under nightly (e.g. stricter type
+        // inference), but we still extract what we can. Without suppression,
+        // nightly-specific errors would leak to the user's terminal.
+        let saved_stderr = unsafe { libc::dup(2) };
+        if let Ok(devnull) = std::fs::File::open("/dev/null") {
+            unsafe { libc::dup2(devnull.as_raw_fd(), 2) };
+        }
+
         let result = rustc_driver::catch_fatal_errors(|| {
             rustc_driver::run_compiler(&driver_args, &mut callbacks);
         });
 
+        // Restore stderr before printing our own diagnostics.
+        if saved_stderr >= 0 {
+            unsafe {
+                libc::dup2(saved_stderr, 2);
+                libc::close(saved_stderr);
+            }
+        }
+
         if result.is_err() {
-            // Compilation had errors, but extraction still ran (via after_expansion
-            // which catches the analysis error). Return Ok so cargo continues
-            // compiling other packages instead of aborting.
             eprintln!("warning: compilation errors in package {}, extraction may be incomplete", id.name());
         }
 
