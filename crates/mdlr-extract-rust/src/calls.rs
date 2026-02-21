@@ -1,3 +1,4 @@
+use rustc_driver;
 use rustc_hir as hir;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::DefId;
@@ -7,15 +8,25 @@ use rustc_span::def_id::DefId;
 /// Uses typeck results to resolve calls to their fully-qualified DefId paths.
 /// This is the primary advantage over tree-sitter: trait method calls are resolved
 /// to their concrete implementations.
-pub fn extract_calls(tcx: TyCtxt<'_>, fn_def_id: DefId, body: &hir::Body<'_>) -> Vec<String> {
+///
+/// Returns `(calls, partial)` where `partial` is true if typeck failed and
+/// call resolution could not be performed.
+pub fn extract_calls(tcx: TyCtxt<'_>, fn_def_id: DefId, body: &hir::Body<'_>) -> (Vec<String>, bool) {
     let mut calls = Vec::new();
     let typeck = match fn_def_id.as_local() {
-        Some(local_id) => tcx.typeck(local_id),
-        None => return calls,
+        Some(local_id) => {
+            // typeck may fail for functions with type errors — catch and degrade
+            // gracefully by returning an empty call list marked as partial.
+            match rustc_driver::catch_fatal_errors(|| tcx.typeck(local_id)) {
+                Ok(results) => results,
+                Err(_) => return (calls, true),
+            }
+        }
+        None => return (calls, false),
     };
 
     visit_expr_for_calls(tcx, typeck, body.value, &mut calls);
-    calls
+    (calls, false)
 }
 
 fn visit_expr_for_calls<'tcx>(

@@ -99,14 +99,14 @@ impl Executor for HirExtractExecutor {
             rustc_driver::run_compiler(&driver_args, &mut callbacks);
         });
 
-        match result {
-            Ok(()) => Ok(()),
-            Err(_) => Err(anyhow::anyhow!(
-                "rustc compilation failed for package {}",
-                id.name()
-            )
-            .into()),
+        if result.is_err() {
+            // Compilation had errors, but extraction still ran (via after_expansion
+            // which catches the analysis error). Return Ok so cargo continues
+            // compiling other packages instead of aborting.
+            eprintln!("warning: compilation errors in package {}, extraction may be incomplete", id.name());
         }
+
+        Ok(())
     }
 
     fn force_rebuild(&self, unit: &Unit) -> bool {

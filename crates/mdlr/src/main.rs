@@ -607,6 +607,15 @@ fn format_text_output(
         }
     }
 
+    let partial_count =
+        computed.graph.units.iter().filter(|u| u.partial).count();
+    if partial_count > 0 {
+        eprintln!(
+            "warning: {} unit(s) have partial extraction (compilation errors prevented full analysis)",
+            partial_count
+        );
+    }
+
     if computed.has_staged {
         eprintln!("(staged tag changes pending - use --save to commit)");
     }
@@ -633,12 +642,16 @@ fn format_json_output(
     let bucketed =
         BucketedMetrics::from_metrics(&computed.structural, &thresholds);
 
+    let partial_count =
+        computed.graph.units.iter().filter(|u| u.partial).count();
+
     let output = serde_json::json!({
         "files": {
             "extracted": extracted_count,
             "cached": cached_count,
         },
         "units": computed.graph.units.len(),
+        "partial_units": partial_count,
         "edges": computed.graph.edges.len(),
         "metrics": {
             "dag_density": build_bucketed_json(&bucketed.dag_density),
@@ -765,10 +778,17 @@ fn build_symbol_json(
         );
     }
 
-    serde_json::json!({
+    let is_partial =
+        computed.graph.units.iter().any(|u| u.id == symbol_id && u.partial);
+
+    let mut output = serde_json::json!({
         "symbol": symbol_id,
         "metrics": metrics
-    })
+    });
+    if is_partial {
+        output["partial"] = serde_json::json!(true);
+    }
+    output
 }
 
 fn handle_check(

@@ -36,6 +36,10 @@ pub struct Unit {
     /// Parent unit ID (for methods: the struct ID)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// True when extraction was incomplete (e.g. compilation errors prevented
+    /// full analysis). Metrics derived from this unit may be inaccurate.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

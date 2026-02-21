@@ -93,6 +93,7 @@ pub fn extract_units(
                     params: 0,
                     branches: 0,
                     parent: None,
+                    partial: false,
                 });
             }
             hir::ItemKind::Fn { sig, body: body_id, .. } => {
@@ -103,7 +104,7 @@ pub fn extract_units(
                 let body = tcx.hir_body(*body_id);
                 let params = count_params(sig.decl);
                 let branch_count = branches::count_branches(tcx, body);
-                let call_targets = calls::extract_calls(tcx, def_id.to_def_id(), body);
+                let (call_targets, calls_partial) = calls::extract_calls(tcx, def_id.to_def_id(), body);
                 let (reads, writes) = field_access::extract_field_access(tcx, body);
 
                 units.push(Unit {
@@ -118,6 +119,7 @@ pub fn extract_units(
                     params,
                     branches: branch_count,
                     parent: None,
+                    partial: calls_partial,
                 });
             }
             hir::ItemKind::Impl(impl_block) => {
@@ -154,7 +156,7 @@ fn visit_impl_block(
                 let body = tcx.hir_body(*body_id);
                 let params = count_params_method(sig.decl);
                 let branch_count = branches::count_branches(tcx, body);
-                let call_targets = calls::extract_calls(tcx, def_id.to_def_id(), body);
+                let (call_targets, calls_partial) = calls::extract_calls(tcx, def_id.to_def_id(), body);
                 let (reads, writes) = field_access::extract_field_access(tcx, body);
 
                 units.push(Unit {
@@ -169,6 +171,7 @@ fn visit_impl_block(
                     params,
                     branches: branch_count,
                     parent: parent_id.clone(),
+                    partial: calls_partial,
                 });
             }
             _ => {}

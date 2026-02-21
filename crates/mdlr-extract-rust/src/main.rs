@@ -156,9 +156,12 @@ fn run_standalone_mode(cli: &Cli) -> Result<()> {
     let exec: Arc<dyn cargo::core::compiler::Executor> =
         Arc::new(executor::HirExtractExecutor::new(mapping, target_packages));
 
-    // Run compilation with our custom executor
-    cargo::ops::compile_with_exec(&ws, &compile_opts, &exec)
-        .context("cargo compilation failed")?;
+    // Run compilation with our custom executor.
+    // Don't treat errors as fatal — some packages may fail to compile but
+    // extraction still runs for whatever succeeded (via after_expansion).
+    if let Err(e) = cargo::ops::compile_with_exec(&ws, &compile_opts, &exec) {
+        eprintln!("warning: {e:#}");
+    }
 
     Ok(())
 }
@@ -168,7 +171,19 @@ struct HirExtractCallbacks {
 }
 
 impl Callbacks for HirExtractCallbacks {
-    fn after_analysis(&mut self, _compiler: &Compiler, tcx: TyCtxt<'_>) -> rustc_driver::Compilation {
+    fn after_expansion<'tcx>(
+        &mut self,
+        _compiler: &Compiler,
+        tcx: TyCtxt<'tcx>,
+    ) -> rustc_driver::Compilation {
+        // Run analysis ourselves so we can catch fatal errors from compilation
+        // failures. analysis() populates all query caches (typeck, borrow check,
+        // etc.) before checking for errors, so even if it panics via raise_fatal(),
+        // the cached results are still available for extraction.
+        let _ = rustc_driver::catch_fatal_errors(|| {
+            let _ = tcx.analysis(());
+        });
+
         let units_by_file = visitor::extract_units(tcx, &self.mapping);
 
         let timestamp = std::time::SystemTime::now()
