@@ -460,14 +460,18 @@ fn extract_rust(
     }
 
     // Single invocation of mdlr-extract-rust in standalone mode.
-    // Inherit stderr so cargo progress bars and diagnostics show through.
+    // Suppress all output — cargo's Compiling/Checking/Finished lines and
+    // rustc diagnostics (via MDLR_QUIET_DIAGNOSTICS) are not useful to the
+    // end user. Run standalone for debugging.
     let status = std::process::Command::new(&extract_bin)
         .arg("--manifest-path")
         .arg(&manifest_path)
         .arg("--mapping")
         .arg(&mapping_path)
+        .env("MDLR_QUIET_DIAGNOSTICS", "1")
         .current_dir(workspace_root)
-        .stderr(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .context("Failed to run mdlr-extract-rust")?;
 

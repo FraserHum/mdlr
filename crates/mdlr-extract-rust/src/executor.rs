@@ -96,14 +96,20 @@ impl Executor for HirExtractExecutor {
             mapping: self.mapping.clone(),
         };
 
-        // Suppress rustc's diagnostic output during compilation. The target
+        // When invoked by mdlr, suppress rustc's diagnostic output. The target
         // crate may not compile cleanly under nightly (e.g. stricter type
-        // inference), but we still extract what we can. Without suppression,
-        // nightly-specific errors would leak to the user's terminal.
-        let saved_stderr = unsafe { libc::dup(2) };
-        if let Ok(devnull) = std::fs::File::open("/dev/null") {
-            unsafe { libc::dup2(devnull.as_raw_fd(), 2) };
-        }
+        // inference), but we still extract what we can. When running standalone,
+        // show full diagnostics for debugging.
+        let suppress = std::env::var_os("MDLR_QUIET_DIAGNOSTICS").is_some();
+        let saved_stderr = if suppress {
+            let fd = unsafe { libc::dup(2) };
+            if let Ok(devnull) = std::fs::File::open("/dev/null") {
+                unsafe { libc::dup2(devnull.as_raw_fd(), 2) };
+            }
+            fd
+        } else {
+            -1
+        };
 
         let result = rustc_driver::catch_fatal_errors(|| {
             rustc_driver::run_compiler(&driver_args, &mut callbacks);
