@@ -194,6 +194,6 @@ impl Callbacks for HirExtractCallbacks {
             }
         }
 
-        rustc_driver::Compilation::Stop
+        rustc_driver::Compilation::Continue
     }
 }

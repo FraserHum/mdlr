@@ -1,5 +1,5 @@
 use cargo::CargoResult;
-use cargo::core::compiler::{CompileMode, Executor, Unit};
+use cargo::core::compiler::{CompileMode, Executor};
 use cargo::core::{PackageId, Target};
 use cargo_util::ProcessBuilder;
 use std::collections::HashSet;
@@ -41,8 +41,11 @@ impl Executor for HirExtractExecutor {
         on_stdout_line: &mut dyn FnMut(&str) -> CargoResult<()>,
         on_stderr_line: &mut dyn FnMut(&str) -> CargoResult<()>,
     ) -> CargoResult<()> {
-        if !self.is_target_package(id) {
-            // Non-target package: run rustc normally
+        if !self.is_target_package(id) || _target.is_custom_build() {
+            // Non-target package or build script: run rustc normally.
+            // Build scripts must compile to a real binary — intercepting them
+            // with HirExtractCallbacks + Compilation::Stop would suppress the
+            // output binary and break cargo.
             return cmd
                 .exec_with_streaming(on_stdout_line, on_stderr_line, false)
                 .map(|_| ());
@@ -127,9 +130,5 @@ impl Executor for HirExtractExecutor {
         }
 
         Ok(())
-    }
-
-    fn force_rebuild(&self, unit: &Unit) -> bool {
-        self.target_packages.contains(&unit.pkg.name().to_string())
     }
 }
