@@ -3,6 +3,8 @@ use rustc_hir as hir;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::DefId;
 
+use crate::visitor::qualified_def_path_str;
+
 /// Extract all call targets from a function/method body.
 ///
 /// Uses typeck results to resolve calls to their fully-qualified DefId paths.
@@ -43,7 +45,7 @@ fn visit_expr_for_calls<'tcx>(
         // Direct function calls: foo(), Struct::method(), etc.
         hir::ExprKind::Call(func, args) => {
             if let Some(def_id) = resolve_call_expr(typeck, func) {
-                let path = tcx.def_path_str(def_id);
+                let path = qualified_def_path_str(tcx, def_id);
                 if !calls.contains(&path) {
                     calls.push(path);
                 }
@@ -57,7 +59,7 @@ fn visit_expr_for_calls<'tcx>(
         // Method calls: x.method(args)
         hir::ExprKind::MethodCall(_segment, receiver, args, _span) => {
             if let Some(def_id) = typeck.type_dependent_def_id(expr.hir_id) {
-                let path = tcx.def_path_str(def_id);
+                let path = qualified_def_path_str(tcx, def_id);
                 if !calls.contains(&path) {
                     calls.push(path);
                 }

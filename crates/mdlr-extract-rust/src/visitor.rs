@@ -2,6 +2,7 @@ use mdlr_core::{Span, Unit, UnitKind};
 use rustc_hir as hir;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::FileName;
+use rustc_span::def_id::{DefId, LOCAL_CRATE};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -58,7 +59,7 @@ pub fn extract_units(tcx: TyCtxt<'_>) -> HashMap<String, Vec<Unit>> {
 
         match &item.kind {
             hir::ItemKind::Struct(_ident, _generics, _variant_data) => {
-                let id = tcx.def_path_str(def_id);
+                let id = qualified_def_path_str(tcx, def_id.into());
                 let lo = tcx.sess.source_map().lookup_char_pos(span.lo());
                 let hi = tcx.sess.source_map().lookup_char_pos(span.hi());
 
@@ -78,7 +79,7 @@ pub fn extract_units(tcx: TyCtxt<'_>) -> HashMap<String, Vec<Unit>> {
                 });
             }
             hir::ItemKind::Fn { sig, body: body_id, .. } => {
-                let id = tcx.def_path_str(def_id);
+                let id = qualified_def_path_str(tcx, def_id.into());
                 let lo = tcx.sess.source_map().lookup_char_pos(span.lo());
                 let hi = tcx.sess.source_map().lookup_char_pos(span.hi());
 
@@ -138,7 +139,7 @@ fn visit_impl_block(
 
         match &impl_item.kind {
             hir::ImplItemKind::Fn(sig, body_id) => {
-                let id = tcx.def_path_str(def_id);
+                let id = qualified_def_path_str(tcx, def_id.into());
                 let lo = tcx.sess.source_map().lookup_char_pos(span.lo());
                 let hi = tcx.sess.source_map().lookup_char_pos(span.hi());
 
@@ -179,7 +180,7 @@ fn resolve_impl_self_type(
         &impl_block.self_ty.kind
     {
         if let hir::def::Res::Def(_, def_id) = path.res {
-            return Some(tcx.def_path_str(def_id));
+            return Some(qualified_def_path_str(tcx, def_id.into()));
         }
     }
     None
@@ -212,6 +213,20 @@ fn is_derived(tcx: TyCtxt<'_>, mut def_id: rustc_hir::def_id::DefId) -> bool {
             Some(parent) => def_id = parent,
             None => return false,
         }
+    }
+}
+
+/// Return a fully-qualified path string for a DefId, always including the crate name.
+///
+/// `def_path_str` omits the crate name for local items. This function
+/// prepends it so that IDs are unambiguous across crates.
+pub fn qualified_def_path_str(tcx: TyCtxt<'_>, def_id: DefId) -> String {
+    let path = tcx.def_path_str(def_id);
+    if def_id.krate == LOCAL_CRATE {
+        let crate_name = tcx.crate_name(LOCAL_CRATE);
+        format!("{crate_name}::{path}")
+    } else {
+        path
     }
 }
 
