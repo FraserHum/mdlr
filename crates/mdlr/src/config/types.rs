@@ -112,6 +112,8 @@ pub struct ThresholdsConfig {
     pub lcom: MetricThresholds,
     #[serde(default = "default_file_loc")]
     pub file_loc: MetricThresholds,
+    #[serde(default = "default_max_scope")]
+    pub max_scope: MetricThresholds,
 }
 
 /// Default threshold values as constants
@@ -167,6 +169,13 @@ mod defaults {
         fair: 600.0,
         poor: 1000.0,
     };
+
+    pub const MAX_SCOPE: MetricThresholds = MetricThresholds {
+        excellent: 15.0,
+        good: 30.0,
+        fair: 50.0,
+        poor: 100.0,
+    };
 }
 
 // Serde default functions (required for partial deserialization)
@@ -203,6 +212,9 @@ fn default_lcom() -> MetricThresholds {
 fn default_file_loc() -> MetricThresholds {
     defaults::FILE_LOC
 }
+fn default_max_scope() -> MetricThresholds {
+    defaults::MAX_SCOPE
+}
 
 impl Default for ThresholdsConfig {
     fn default() -> Self {
@@ -218,6 +230,7 @@ impl Default for ThresholdsConfig {
             methods_per_struct: defaults::METHODS_PER_STRUCT,
             lcom: defaults::LCOM,
             file_loc: defaults::FILE_LOC,
+            max_scope: defaults::MAX_SCOPE,
         }
     }
 }
@@ -235,6 +248,7 @@ impl ThresholdsConfig {
             "methods_per_struct" => Some(&self.methods_per_struct),
             "lcom" => Some(&self.lcom),
             "file_loc" => Some(&self.file_loc),
+            "max_scope" => Some(&self.max_scope),
             _ => None,
         }
     }

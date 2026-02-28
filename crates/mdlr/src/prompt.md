@@ -33,14 +33,4 @@ mdlr metrics get cyclomatic
 2. Focus on high-value opportunities (top of each metric)
 3. Drill down with `mdlr check <symbol>` to get metrics for a specific unit
 4. Refactor to reduce complexity, coupling, and improve cohesion
-5. Run `mdlr check --save` to cache results once satisfied
-
-## Key Metrics
-
-- **fan_out**: Dependencies a unit has. High = too many responsibilities
-- **fan_in**: Units depending on this. Very high = potential bottleneck
-- **function_size**: Lines of code in a function. High = hard to understand/test
-- **file_loc**: Lines of code in a file. High = hard to navigate/maintain
-- **cyclomatic**: Branch complexity. High = hard to test/maintain
-- **lcom**: LCOM4 - connected components of methods sharing fields/calls. 1 = cohesive, 2+ = struct should be split
-- **methods_per_struct**: Methods in a struct. High = too many responsibilities
+5. Repeat until there are no more high value opportunities

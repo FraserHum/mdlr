@@ -33,6 +33,9 @@ pub struct Unit {
     /// Number of branch points (if/else/match arms/loops) for cyclomatic complexity
     #[serde(default)]
     pub branches: usize,
+    /// Largest single scope block (if/else body, match arm, loop body, etc.) in lines
+    #[serde(default)]
+    pub max_scope_lines: usize,
     /// Parent unit ID (for methods: the struct ID)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,

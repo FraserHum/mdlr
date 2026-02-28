@@ -11,6 +11,7 @@ mod branches;
 mod calls;
 mod executor;
 mod field_access;
+mod scopes;
 mod visitor;
 
 use anyhow::{Context, Result};

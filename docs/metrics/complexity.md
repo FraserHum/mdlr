@@ -69,6 +69,26 @@ Counts:
 | Poor | < 30 |
 | Critical | >= 30 |
 
+### Max Scope Lines
+
+Measures the largest single scope block within each function. While `function_size` measures the overall length, `max_scope` catches functions where a single block (if body, match arm, loop body, closure) dominates — suggesting that block should be extracted into its own function.
+
+| Statistic | Description |
+|-----------|-------------|
+| max | Largest scope block across all functions |
+| mean | Average max scope size |
+| p90 | 90th percentile max scope size |
+
+**Default thresholds:**
+
+| Bucket | Threshold |
+|--------|-----------|
+| Excellent | < 15 lines |
+| Good | < 30 lines |
+| Fair | < 50 lines |
+| Poor | < 100 lines |
+| Critical | >= 100 lines |
+
 ## Example Output
 
 ```
@@ -94,6 +114,7 @@ Largest Functions:
 - **High function size**: Consider breaking into smaller, focused functions
 - **Many parameters**: Consider using a struct/builder pattern
 - **High cyclomatic complexity**: Consider extracting conditional logic into separate functions
+- **High max scope**: Extract the oversized block into a separate function
 
 ## Configuration
 
@@ -116,4 +137,10 @@ thresholds:
     good: 10
     fair: 20
     poor: 30
+
+  max_scope:
+    excellent: 15
+    good: 30
+    fair: 50
+    poor: 100
 ```

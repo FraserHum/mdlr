@@ -61,6 +61,13 @@ pub fn build_complexity_json(
         .map(|(id, cc)| serde_json::json!({"id": id, "complexity": cc}))
         .collect();
 
+    let max_scope_distribution: Vec<_> = complexity
+        .max_scope
+        .distribution
+        .iter()
+        .map(|(id, lines)| serde_json::json!({"id": id, "lines": lines}))
+        .collect();
+
     serde_json::json!({
         "size": {
             "max": complexity.size.max,
@@ -78,6 +85,12 @@ pub fn build_complexity_json(
             "mean": complexity.cyclomatic.mean,
             "p90": complexity.cyclomatic.p90,
             "distribution": cyclomatic_distribution,
+        },
+        "max_scope": {
+            "max": complexity.max_scope.max,
+            "mean": complexity.max_scope.mean,
+            "p90": complexity.max_scope.p90,
+            "distribution": max_scope_distribution,
         },
     })
 }

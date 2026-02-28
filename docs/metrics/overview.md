@@ -19,6 +19,7 @@ mdlr computes structural metrics that help you understand the modularity and cou
 | [Function Size](complexity.md#function-size) | Lines of code per function |
 | [Parameter Count](complexity.md#parameter-count) | Number of parameters per function |
 | [Cyclomatic Complexity](complexity.md#cyclomatic-complexity) | Number of decision paths through a function |
+| [Max Scope Lines](complexity.md#max-scope-lines) | Largest single scope block within a function |
 
 ### File Metrics
 

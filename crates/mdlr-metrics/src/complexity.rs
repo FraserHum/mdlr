@@ -10,6 +10,8 @@ pub struct ComplexityMetrics {
     pub params: ParamMetrics,
     /// Cyclomatic complexity (branches + 1)
     pub cyclomatic: CyclomaticMetrics,
+    /// Largest single scope block within each function
+    pub max_scope: MaxScopeMetrics,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +40,15 @@ pub struct CyclomaticMetrics {
     pub distribution: Vec<(String, usize)>,
 }
 
+#[derive(Debug, Clone)]
+pub struct MaxScopeMetrics {
+    pub max: usize,
+    pub mean: f64,
+    pub p90: usize,
+    /// Functions/methods sorted by max scope size descending
+    pub distribution: Vec<(String, usize)>,
+}
+
 impl ComplexityMetrics {
     /// Compute complexity metrics from a graph
     #[tracing::instrument(name = "compute_complexity", skip_all)]
@@ -45,6 +56,7 @@ impl ComplexityMetrics {
         let mut sizes: HashMap<String, usize> = HashMap::new();
         let mut params: HashMap<String, usize> = HashMap::new();
         let mut cyclomatic: HashMap<String, usize> = HashMap::new();
+        let mut max_scope: HashMap<String, usize> = HashMap::new();
 
         for unit in &graph.units {
             // Only compute complexity for functions and methods
@@ -64,12 +76,16 @@ impl ComplexityMetrics {
             // Cyclomatic complexity (from unit.branches if available)
             // Cyclomatic = branches + 1
             cyclomatic.insert(unit.id.clone(), unit.branches + 1);
+
+            // Max scope lines
+            max_scope.insert(unit.id.clone(), unit.max_scope_lines);
         }
 
         Self {
             size: SizeMetrics::from_counts(sizes),
             params: ParamMetrics::from_counts(params),
             cyclomatic: CyclomaticMetrics::from_counts(cyclomatic),
+            max_scope: MaxScopeMetrics::from_counts(max_scope),
         }
     }
 
@@ -140,6 +156,28 @@ impl CyclomaticMetrics {
     }
 }
 
+impl MaxScopeMetrics {
+    fn from_counts(counts: HashMap<String, usize>) -> Self {
+        if counts.is_empty() {
+            return Self { max: 0, mean: 0.0, p90: 0, distribution: vec![] };
+        }
+
+        let max = counts.values().copied().max().unwrap_or(0);
+        let sum: usize = counts.values().sum();
+        let mean = sum as f64 / counts.len() as f64;
+
+        let mut sorted_values: Vec<usize> = counts.values().copied().collect();
+        sorted_values.sort();
+        let p90_idx = (sorted_values.len() as f64 * 0.9).ceil() as usize - 1;
+        let p90 = sorted_values.get(p90_idx).copied().unwrap_or(max);
+
+        let mut distribution: Vec<_> = counts.into_iter().collect();
+        distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        Self { max, mean, p90, distribution }
+    }
+}
+
 impl std::fmt::Display for ComplexityMetrics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Complexity Metrics")?;
@@ -160,6 +198,11 @@ impl std::fmt::Display for ComplexityMetrics {
             f,
             "Cyclomatic:    max={}, mean={:.1}, p90={}",
             self.cyclomatic.max, self.cyclomatic.mean, self.cyclomatic.p90
+        )?;
+        writeln!(
+            f,
+            "Max Scope:     max={} lines, mean={:.1}, p90={}",
+            self.max_scope.max, self.max_scope.mean, self.max_scope.p90
         )?;
 
         // Show top complex functions (by cyclomatic complexity)
@@ -247,7 +290,9 @@ mod tests {
             tags: vec![],
             params,
             branches,
+            max_scope_lines: 0,
             parent: None,
+            partial: false,
         }
     }
 

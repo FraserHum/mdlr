@@ -230,6 +230,12 @@ pub fn collect_metric_rows(
             min_value: 1,
         },
         IntMetricSpec {
+            name: "max_scope",
+            distribution: &m.complexity.max_scope.distribution,
+            thresholds: &t.max_scope,
+            min_value: 0,
+        },
+        IntMetricSpec {
             name: "methods_per_struct",
             distribution: &m.struct_metrics.methods_per_struct.distribution,
             thresholds: &t.methods_per_struct,
@@ -318,6 +324,7 @@ pub fn collect_metric_rows(
         "function_size",
         "params",
         "cyclomatic",
+        "max_scope",
         "methods_per_struct",
         "file_loc",
         "lcom",

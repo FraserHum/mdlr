@@ -494,7 +494,9 @@ mod tests {
             tags: vec![],
             params: 0,
             branches: 0,
+            max_scope_lines: 0,
             parent: None,
+            partial: false,
         }
     }
 

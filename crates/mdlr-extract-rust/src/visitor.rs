@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crate::branches;
 use crate::calls;
 use crate::field_access;
+use crate::scopes;
 
 /// Extract units from HIR for all source files in the crate.
 ///
@@ -74,6 +75,7 @@ pub fn extract_units(tcx: TyCtxt<'_>) -> HashMap<String, Vec<Unit>> {
                     tags: vec![],
                     params: 0,
                     branches: 0,
+                    max_scope_lines: 0,
                     parent: None,
                     partial: false,
                 });
@@ -86,6 +88,7 @@ pub fn extract_units(tcx: TyCtxt<'_>) -> HashMap<String, Vec<Unit>> {
                 let body = tcx.hir_body(*body_id);
                 let params = count_params(sig.decl);
                 let branch_count = branches::count_branches(tcx, body);
+                let max_scope = scopes::max_scope_lines(tcx, body);
                 let (call_targets, calls_partial) =
                     calls::extract_calls(tcx, def_id.to_def_id(), body);
                 let (reads, writes) =
@@ -102,6 +105,7 @@ pub fn extract_units(tcx: TyCtxt<'_>) -> HashMap<String, Vec<Unit>> {
                     tags: vec![],
                     params,
                     branches: branch_count,
+                    max_scope_lines: max_scope,
                     parent: None,
                     partial: calls_partial,
                 });
@@ -146,6 +150,7 @@ fn visit_impl_block(
                 let body = tcx.hir_body(*body_id);
                 let params = count_params_method(sig.decl);
                 let branch_count = branches::count_branches(tcx, body);
+                let max_scope = scopes::max_scope_lines(tcx, body);
                 let (call_targets, calls_partial) =
                     calls::extract_calls(tcx, def_id.to_def_id(), body);
                 let (reads, writes) =
@@ -162,6 +167,7 @@ fn visit_impl_block(
                     tags: vec![],
                     params,
                     branches: branch_count,
+                    max_scope_lines: max_scope,
                     parent: parent_id.clone(),
                     partial: calls_partial,
                 });

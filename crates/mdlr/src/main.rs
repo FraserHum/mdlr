@@ -80,6 +80,10 @@ fn get_metric_descriptions() -> Vec<(&'static str, &'static str)> {
             "Cyclomatic complexity (branches + 1) of a function. High values indicate complex control flow that is harder to test and maintain.",
         ),
         (
+            "max_scope",
+            "Largest single scope block (if/else body, match arm, loop body) within a function in lines. High values indicate oversized blocks that should be extracted.",
+        ),
+        (
             "methods_per_struct",
             "Number of methods in a struct. High values may indicate a type with too many responsibilities.",
         ),
@@ -556,6 +560,20 @@ fn build_symbol_json(
         );
     }
 
+    if let Some((_, value)) = computed
+        .complexity
+        .max_scope
+        .distribution
+        .iter()
+        .find(|(name, _)| name == symbol_id)
+    {
+        let bucket = config.thresholds.max_scope.evaluate(*value as f64);
+        metrics.insert(
+            "max_scope".to_string(),
+            serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
+        );
+    }
+
     // Struct metrics
     if let Some((_, value)) = computed
         .struct_metrics
@@ -727,6 +745,7 @@ const VALID_METRICS: &[&str] = &[
     "function_size",
     "params",
     "cyclomatic",
+    "max_scope",
     "methods_per_struct",
     "lcom",
     "file_loc",
