@@ -79,6 +79,34 @@ fn extract_fn_unit(
     }
 }
 
+/// Build a Unit for a struct definition.
+fn extract_struct_unit(
+    tcx: TyCtxt<'_>,
+    def_id: hir::def_id::LocalDefId,
+    span: rustc_span::Span,
+    source_key: &str,
+) -> Unit {
+    let id = qualified_def_path_str(tcx, def_id.into());
+    let lo = tcx.sess.source_map().lookup_char_pos(span.lo());
+    let hi = tcx.sess.source_map().lookup_char_pos(span.hi());
+
+    Unit {
+        id,
+        kind: UnitKind::Struct,
+        file: PathBuf::from(source_key),
+        span: make_span(&lo, &hi),
+        reads: vec![],
+        writes: vec![],
+        calls: vec![],
+        tags: vec![],
+        params: 0,
+        branches: 0,
+        max_scope_lines: 0,
+        parent: None,
+        partial: false,
+    }
+}
+
 /// Extract units from HIR for all source files in the crate.
 ///
 /// Returns a map from relative source file path to the units found in that file.
@@ -104,25 +132,12 @@ pub fn extract_units(tcx: TyCtxt<'_>) -> HashMap<String, Vec<Unit>> {
 
         match &item.kind {
             hir::ItemKind::Struct(_ident, _generics, _variant_data) => {
-                let id = qualified_def_path_str(tcx, def_id.into());
-                let lo = tcx.sess.source_map().lookup_char_pos(span.lo());
-                let hi = tcx.sess.source_map().lookup_char_pos(span.hi());
-
-                units.push(Unit {
-                    id,
-                    kind: UnitKind::Struct,
-                    file: PathBuf::from(&source_key),
-                    span: make_span(&lo, &hi),
-                    reads: vec![],
-                    writes: vec![],
-                    calls: vec![],
-                    tags: vec![],
-                    params: 0,
-                    branches: 0,
-                    max_scope_lines: 0,
-                    parent: None,
-                    partial: false,
-                });
+                units.push(extract_struct_unit(
+                    tcx,
+                    def_id,
+                    span,
+                    &source_key,
+                ));
             }
             hir::ItemKind::Fn { sig, body: body_id, .. } => {
                 let props = FnProps {

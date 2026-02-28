@@ -492,24 +492,16 @@ fn load_filtered_units(
     Ok((entries, units))
 }
 
-fn handle_check(
-    target: Option<&str>,
+/// Extract, load, validate, and compute all metrics.
+fn extract_and_analyze(
+    ctx: &CheckContext,
+    filter: &CheckFilter,
     save: bool,
-    k: i32,
-    pretty: bool,
-    format: OutputFormat,
-    timing: bool,
-) -> Result<()> {
-    let printer = setup_timing(timing);
-    let ctx = CheckContext::new()?;
-    let filter = parse_check_filter(target, &ctx.cwd);
-
+) -> Result<(ComputedMetrics, usize)> {
     extract_rust(&ctx.store)?;
+    let (entries, units) = load_filtered_units(&ctx.store, filter)?;
 
-    let (entries, units) = load_filtered_units(&ctx.store, &filter)?;
-
-    // Validate symbol exists before building graph (bail if not found)
-    if let CheckFilter::Symbol(symbol_id) = &filter {
+    if let CheckFilter::Symbol(symbol_id) = filter {
         if !units.iter().any(|u| u.id == *symbol_id) {
             bail!(
                 "Symbol '{}' not found. Run 'mdlr ls' to see available symbols.",
@@ -522,7 +514,24 @@ fn handle_check(
         ctx.store.commit_staged_tags()?;
     }
 
+    let entry_count = entries.len();
     let computed = compute_all_metrics(units, &ctx.store, &ctx.config);
+    Ok((computed, entry_count))
+}
+
+fn handle_check(
+    target: Option<&str>,
+    save: bool,
+    k: i32,
+    pretty: bool,
+    format: OutputFormat,
+    timing: bool,
+) -> Result<()> {
+    let printer = setup_timing(timing);
+    let ctx = CheckContext::new()?;
+    let filter = parse_check_filter(target, &ctx.cwd);
+
+    let (computed, entry_count) = extract_and_analyze(&ctx, &filter, save)?;
 
     let result = match format {
         OutputFormat::Text => format_text_output(
@@ -533,13 +542,9 @@ fn handle_check(
             &filter,
             &ctx.store,
         ),
-        OutputFormat::Json => format_json_output(
-            &computed,
-            &ctx.config,
-            entries.len(),
-            0,
-            &filter,
-        ),
+        OutputFormat::Json => {
+            format_json_output(&computed, &ctx.config, entry_count, 0, &filter)
+        }
     };
 
     if let Some(printer) = printer {

@@ -9,19 +9,14 @@ use crate::cli::OutputFormat;
 use crate::walk::SourceWalker;
 use mdlr_core::{Unit, UnitKind};
 
-/// Handle the 'ls' command to list symbols
-pub fn handle_ls(
-    path: &Path,
-    kind_filter: Option<String>,
-    format: OutputFormat,
-) -> Result<()> {
-    let store = CacheStore::open(path)?;
+/// Collect all units with their tags, optionally filtered by kind.
+fn collect_units_with_tags(
+    store: &CacheStore,
+    kind_filter: Option<UnitKind>,
+) -> Result<Vec<(Unit, Vec<String>)>> {
     let walker = SourceWalker::new(store.root());
     let semantic_tags = store.load_tags_with_staged()?;
-
-    let kind_filter = kind_filter.map(|k| parse_unit_kind(&k)).transpose()?;
-
-    let mut all_units: Vec<(Unit, Vec<String>)> = Vec::new();
+    let mut all_units = Vec::new();
 
     for file_path in walker.walk() {
         if let Ok(Some(entry)) = store.load_entry(&file_path) {
@@ -36,6 +31,19 @@ pub fn handle_ls(
             }
         }
     }
+
+    Ok(all_units)
+}
+
+/// Handle the 'ls' command to list symbols
+pub fn handle_ls(
+    path: &Path,
+    kind_filter: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
+    let store = CacheStore::open(path)?;
+    let kind_filter = kind_filter.map(|k| parse_unit_kind(&k)).transpose()?;
+    let all_units = collect_units_with_tags(&store, kind_filter)?;
 
     match format {
         OutputFormat::Text => print_ls_text(&all_units),
@@ -95,35 +103,29 @@ fn print_ls_json(all_units: Vec<(Unit, Vec<String>)>) -> Result<()> {
     Ok(())
 }
 
-/// Handle the 'get' command to retrieve a symbol
-pub fn handle_get(symbol: &str, format: OutputFormat) -> Result<()> {
-    let store = CacheStore::open(Path::new("."))?;
+/// Find a unit by symbol ID in the cache.
+fn find_unit(store: &CacheStore, symbol: &str) -> Result<Unit> {
     let walker = SourceWalker::new(store.root());
-    let semantic_tags = store.load_tags_with_staged()?;
-
-    // Find the unit
-    let mut found_unit: Option<Unit> = None;
     for file_path in walker.walk() {
         if let Ok(Some(entry)) = store.load_entry(&file_path) {
             for unit in entry.units {
                 if unit.id == symbol {
-                    found_unit = Some(unit);
-                    break;
+                    return Ok(unit);
                 }
             }
         }
-        if found_unit.is_some() {
-            break;
-        }
     }
+    bail!(
+        "Symbol '{}' not found. Run 'mdlr ls' to see available symbols.",
+        symbol
+    )
+}
 
-    let unit = match found_unit {
-        Some(u) => u,
-        None => bail!(
-            "Symbol '{}' not found. Run 'mdlr ls' to see available symbols.",
-            symbol
-        ),
-    };
+/// Handle the 'get' command to retrieve a symbol
+pub fn handle_get(symbol: &str, format: OutputFormat) -> Result<()> {
+    let store = CacheStore::open(Path::new("."))?;
+    let unit = find_unit(&store, symbol)?;
+    let semantic_tags = store.load_tags_with_staged()?;
 
     // Read the source file and extract the span
     let source_path = store.root().join(&unit.file);
