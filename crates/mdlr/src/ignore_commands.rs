@@ -2,7 +2,8 @@
 
 use anyhow::{Result, bail};
 
-use crate::cache::CacheStore;
+use crate::cache::{CacheStore, IgnoresStore};
+use std::path::Path;
 
 /// Valid metric names that can be ignored
 const VALID_METRICS: &[&str] = &[
@@ -19,14 +20,16 @@ const VALID_METRICS: &[&str] = &[
 
 // TODO: Make it so that agents cannot ignore, but humans can
 pub fn handle_ignore(
-    store: &CacheStore,
     metric: Option<String>,
     symbol: Option<String>,
     remove: bool,
     list: bool,
 ) -> Result<()> {
+    let store = CacheStore::open(Path::new("."))?;
+    let ignores_store = store.ignores();
+
     if list {
-        return handle_ignore_list(store);
+        return handle_ignore_list(&ignores_store);
     }
 
     let metric = metric.ok_or_else(|| {
@@ -49,13 +52,13 @@ pub fn handle_ignore(
         symbol.ok_or_else(|| anyhow::anyhow!("Symbol ID is required."))?;
 
     if remove {
-        handle_ignore_remove(store, &metric, &symbol)
+        handle_ignore_remove(&ignores_store, &metric, &symbol)
     } else {
-        handle_ignore_add(store, &metric, &symbol)
+        handle_ignore_add(&ignores_store, &metric, &symbol)
     }
 }
 
-fn handle_ignore_list(store: &CacheStore) -> Result<()> {
+fn handle_ignore_list(store: &IgnoresStore) -> Result<()> {
     let ignores = store.load_ignores()?;
 
     if ignores.is_empty() {
@@ -77,7 +80,7 @@ fn handle_ignore_list(store: &CacheStore) -> Result<()> {
 }
 
 fn handle_ignore_add(
-    store: &CacheStore,
+    store: &IgnoresStore,
     metric: &str,
     symbol: &str,
 ) -> Result<()> {
@@ -96,7 +99,7 @@ fn handle_ignore_add(
 }
 
 fn handle_ignore_remove(
-    store: &CacheStore,
+    store: &IgnoresStore,
     metric: &str,
     symbol: &str,
 ) -> Result<()> {

@@ -48,8 +48,9 @@ pub fn handle_tag_list(
     store: &CacheStore,
     format: OutputFormat,
 ) -> Result<()> {
-    let semantic_tags = store.load_tags_with_staged()?;
-    let has_staged = store.has_staged_tags();
+    let tags_store = store.tags();
+    let semantic_tags = tags_store.load_tags_with_staged()?;
+    let has_staged = tags_store.has_staged_tags();
 
     match format {
         OutputFormat::Text => {
@@ -96,9 +97,10 @@ pub fn verify_symbol_exists(store: &CacheStore, symbol: &str) -> Result<()> {
 
 /// Clear all tags from a symbol
 pub fn handle_tag_clear(store: &CacheStore, symbol: &str) -> Result<()> {
-    let mut staged = store.load_staged_tags()?;
+    let tags_store = store.tags();
+    let mut staged = tags_store.load_staged_tags()?;
     staged.stage_clear(symbol);
-    store.save_staged_tags(&staged)?;
+    tags_store.save_staged_tags(&staged)?;
     println!(
         "Staged: clear all tags from '{}' (use 'mdlr check --save' to commit)",
         symbol
@@ -112,9 +114,10 @@ pub fn handle_tag_remove(
     symbol: &str,
     tag: &str,
 ) -> Result<()> {
-    let mut staged = store.load_staged_tags()?;
+    let tags_store = store.tags();
+    let mut staged = tags_store.load_staged_tags()?;
     staged.stage_remove(symbol, tag);
-    store.save_staged_tags(&staged)?;
+    tags_store.save_staged_tags(&staged)?;
     println!(
         "Staged: remove tag '{}' from '{}' (use 'mdlr check --save' to commit)",
         tag, symbol
@@ -128,11 +131,12 @@ pub fn handle_tag_add(
     symbol: &str,
     tags: &[String],
 ) -> Result<()> {
-    let mut staged = store.load_staged_tags()?;
+    let tags_store = store.tags();
+    let mut staged = tags_store.load_staged_tags()?;
     for tag in tags {
         staged.stage_add(symbol, tag)?;
     }
-    store.save_staged_tags(&staged)?;
+    tags_store.save_staged_tags(&staged)?;
     println!(
         "Staged: add {} tag(s) to '{}' (use 'mdlr check --save' to commit)",
         tags.len(),
@@ -147,7 +151,7 @@ pub fn handle_tag_show(
     symbol: &str,
     format: OutputFormat,
 ) -> Result<()> {
-    let semantic_tags = store.load_tags_with_staged()?;
+    let semantic_tags = store.tags().load_tags_with_staged()?;
     let tags = semantic_tags.get_tags(symbol);
     match format {
         OutputFormat::Text => {

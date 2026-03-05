@@ -48,10 +48,7 @@ fn main() -> Result<()> {
             tag_commands::handle_tag(symbol, add, remove, clear, list, format)
         }
         Command::Ignore { metric, symbol, remove, list } => {
-            let store = CacheStore::open(Path::new("."))?;
-            ignore_commands::handle_ignore(
-                &store, metric, symbol, remove, list,
-            )
+            ignore_commands::handle_ignore(metric, symbol, remove, list)
         }
     }
 }
@@ -254,8 +251,9 @@ fn compute_all_metrics(
     let complexity = ComplexityMetrics::compute(&graph);
     let struct_metrics = StructMetrics::compute(&graph);
     let file_loc = FileLocMetrics::compute(&graph);
-    let semantic_tags = store.load_tags_with_staged().unwrap_or_default();
-    let has_staged = store.has_staged_tags();
+    let tags_store = store.tags();
+    let semantic_tags = tags_store.load_tags_with_staged().unwrap_or_default();
+    let has_staged = tags_store.has_staged_tags();
 
     // Convert cache SemanticTags to metrics SemanticTags
     let metrics_tags =
@@ -298,7 +296,7 @@ fn format_text_output(
         tag_metrics: &computed.tag_metrics,
     };
     let symbol_filter = get_symbol_filter(filter);
-    let ignores = store.load_ignores().unwrap_or_default();
+    let ignores = store.ignores().load_ignores().unwrap_or_default();
     let rows =
         collect_metric_rows(&bundle, config, k, symbol_filter, &ignores);
 
@@ -511,7 +509,7 @@ fn extract_and_analyze(
     }
 
     if save {
-        ctx.store.commit_staged_tags()?;
+        ctx.store.tags().commit_staged_tags()?;
     }
 
     let entry_count = entries.len();

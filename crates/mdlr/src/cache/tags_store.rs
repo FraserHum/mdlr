@@ -1,15 +1,24 @@
-//! Tag storage operations for CacheStore.
+//! Tag storage operations.
 //!
-//! This module extends CacheStore with methods for managing semantic tags
-//! and staged tag changes.
+//! TagsStore manages semantic tags and staged tag changes,
+//! separate from the core cache storage.
 
-use super::store::CacheStore;
 use super::types::{SemanticTags, StagedTags};
 use anyhow::{Context, Result};
 use std::fs;
+use std::path::PathBuf;
 
-/// Tag storage operations for CacheStore.
-impl CacheStore {
+/// Store for managing semantic tags and staged tag changes.
+pub struct TagsStore {
+    tags_path: PathBuf,
+    staged_tags_path: PathBuf,
+}
+
+impl TagsStore {
+    pub fn new(tags_path: PathBuf, staged_tags_path: PathBuf) -> Self {
+        Self { tags_path, staged_tags_path }
+    }
+
     /// Load semantic tags.
     pub fn load_tags(&self) -> Result<SemanticTags> {
         if !self.tags_path.exists() {

@@ -15,7 +15,7 @@ fn collect_units_with_tags(
     kind_filter: Option<UnitKind>,
 ) -> Result<Vec<(Unit, Vec<String>)>> {
     let walker = SourceWalker::new(store.root());
-    let semantic_tags = store.load_tags_with_staged()?;
+    let semantic_tags = store.tags().load_tags_with_staged()?;
     let mut all_units = Vec::new();
 
     for file_path in walker.walk() {
@@ -125,7 +125,7 @@ fn find_unit(store: &CacheStore, symbol: &str) -> Result<Unit> {
 pub fn handle_get(symbol: &str, format: OutputFormat) -> Result<()> {
     let store = CacheStore::open(Path::new("."))?;
     let unit = find_unit(&store, symbol)?;
-    let semantic_tags = store.load_tags_with_staged()?;
+    let semantic_tags = store.tags().load_tags_with_staged()?;
 
     // Read the source file and extract the span
     let source_path = store.root().join(&unit.file);

@@ -1,3 +1,5 @@
+use super::ignores_store::IgnoresStore;
+use super::tags_store::TagsStore;
 use super::types::FileCacheEntry;
 use anyhow::{Context, Result};
 use std::fs;
@@ -13,8 +15,7 @@ const STAGED_TAGS_FILE: &str = "tags.staged.json";
 pub struct CacheStore {
     root: PathBuf,
     cache_dir: PathBuf,
-    pub(super) tags_path: PathBuf,
-    pub(super) staged_tags_path: PathBuf,
+    mdlr_dir: PathBuf,
 }
 
 impl CacheStore {
@@ -23,14 +24,12 @@ impl CacheStore {
         let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let mdlr_dir = root.join(CACHE_DIR_NAME);
         let cache_dir = mdlr_dir.join(CACHE_SUBDIR);
-        let tags_path = mdlr_dir.join(TAGS_FILE);
-        let staged_tags_path = mdlr_dir.join(STAGED_TAGS_FILE);
 
         fs::create_dir_all(&cache_dir).with_context(|| {
             format!("Failed to create cache directory: {:?}", cache_dir)
         })?;
 
-        Ok(Self { root, cache_dir, tags_path, staged_tags_path })
+        Ok(Self { root, cache_dir, mdlr_dir })
     }
 
     /// Find and open a cache store by searching up from the given directory.
@@ -131,6 +130,19 @@ impl CacheStore {
             format!("Failed to write cache entry: {:?}", cache_path)
         })?;
         Ok(())
+    }
+
+    /// Get a TagsStore for managing semantic tags.
+    pub fn tags(&self) -> TagsStore {
+        TagsStore::new(
+            self.mdlr_dir.join(TAGS_FILE),
+            self.mdlr_dir.join(STAGED_TAGS_FILE),
+        )
+    }
+
+    /// Get an IgnoresStore for managing metric ignores.
+    pub fn ignores(&self) -> IgnoresStore {
+        IgnoresStore::new(self.mdlr_dir.clone())
     }
 }
 

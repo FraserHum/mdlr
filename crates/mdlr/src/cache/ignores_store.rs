@@ -1,14 +1,13 @@
-//! Ignore storage operations for CacheStore.
+//! Ignore storage operations.
 //!
-//! This module extends CacheStore with methods for managing per-unit metric
-//! ignores. Ignores allow users to suppress specific metrics for specific
-//! symbols to reduce false positives in check output.
+//! IgnoresStore manages per-unit metric ignores, separate from
+//! the core cache storage.
 
-use super::store::CacheStore;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::path::PathBuf;
 
 const IGNORES_FILE: &str = "ignores.json";
 
@@ -62,11 +61,19 @@ impl Ignores {
     }
 }
 
-/// Ignore storage operations for CacheStore.
-impl CacheStore {
+/// Store for managing per-unit metric ignores.
+pub struct IgnoresStore {
+    mdlr_dir: PathBuf,
+}
+
+impl IgnoresStore {
+    pub fn new(mdlr_dir: PathBuf) -> Self {
+        Self { mdlr_dir }
+    }
+
     /// Get the path to the ignores file.
-    fn ignores_path(&self) -> std::path::PathBuf {
-        self.root().join(".mdlr").join(IGNORES_FILE)
+    fn ignores_path(&self) -> PathBuf {
+        self.mdlr_dir.join(IGNORES_FILE)
     }
 
     /// Load ignores from storage.
