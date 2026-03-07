@@ -18,11 +18,22 @@ pub struct HirExtractExecutor {
     target_packages: HashSet<String>,
     /// Mutex to serialize rustc_driver calls (global state safety)
     driver_lock: Mutex<()>,
+    /// If set, stamp all cache entries with this generation ID
+    generation_id: Option<u64>,
 }
 
 impl HirExtractExecutor {
-    pub fn new(output_dir: PathBuf, target_packages: HashSet<String>) -> Self {
-        Self { output_dir, target_packages, driver_lock: Mutex::new(()) }
+    pub fn new(
+        output_dir: PathBuf,
+        target_packages: HashSet<String>,
+        generation_id: Option<u64>,
+    ) -> Self {
+        Self {
+            output_dir,
+            target_packages,
+            driver_lock: Mutex::new(()),
+            generation_id,
+        }
     }
 
     fn is_target_package(&self, id: PackageId) -> bool {
@@ -113,8 +124,10 @@ impl Executor for HirExtractExecutor {
             }
         }
 
-        let mut callbacks =
-            HirExtractCallbacks { output_dir: self.output_dir.clone() };
+        let mut callbacks = HirExtractCallbacks {
+            output_dir: self.output_dir.clone(),
+            generation_id: self.generation_id,
+        };
 
         let _suppress = StderrSuppress::maybe_suppress();
         let result = rustc_driver::catch_fatal_errors(|| {

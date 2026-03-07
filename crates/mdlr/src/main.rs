@@ -171,8 +171,11 @@ fn find_extract_rust_binary() -> Result<PathBuf> {
 ///
 /// Invokes `mdlr-extract-rust --manifest-path <path> --output <dir>`,
 /// writing per-file JSON results directly into the cache directory.
+///
+/// Returns a generation ID (unix timestamp) that was passed to the extractor.
+/// Cache entries with `cached_at < generation_id` are stale and should be filtered out.
 #[tracing::instrument(name = "extract", skip_all)]
-fn extract_rust(store: &CacheStore) -> Result<()> {
+fn extract_rust(store: &CacheStore) -> Result<u64> {
     let workspace_root = store.root();
 
     // Find mdlr-extract-rust binary
@@ -183,6 +186,13 @@ fn extract_rust(store: &CacheStore) -> Result<()> {
     if !manifest_path.exists() {
         bail!("No Cargo.toml found at {}", manifest_path.display());
     }
+
+    // Generate a generation ID so we can filter out stale cache entries
+    // (from deleted files or previous partial extractions).
+    let generation_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
 
     // Single invocation of mdlr-extract-rust in standalone mode.
     // Output goes directly to .mdlr/cache/ so results are immediately
@@ -195,6 +205,8 @@ fn extract_rust(store: &CacheStore) -> Result<()> {
         .arg(&manifest_path)
         .arg("--output")
         .arg(store.cache_dir())
+        .arg("--generation-id")
+        .arg(generation_id.to_string())
         .env("MDLR_QUIET_DIAGNOSTICS", "1")
         .current_dir(workspace_root)
         .stdout(std::process::Stdio::null())
@@ -208,7 +220,7 @@ fn extract_rust(store: &CacheStore) -> Result<()> {
         );
     }
 
-    Ok(())
+    Ok(generation_id)
 }
 
 /// Recursively load FileCacheEntry JSON files from a directory.
@@ -464,19 +476,26 @@ fn setup_timing(enabled: bool) -> Option<timing::TimingPrinter> {
 }
 
 /// Load cache entries and collect units matching the filter.
+/// Entries with `cached_at < generation_id` are stale and skipped.
 fn load_filtered_units(
     store: &CacheStore,
     filter: &CheckFilter,
+    generation_id: u64,
 ) -> Result<(Vec<FileCacheEntry>, Vec<Unit>)> {
-    let mut entries = Vec::new();
-    load_entries_from_dir(&store.cache_dir(), &mut entries)?;
+    let mut all_entries = Vec::new();
+    load_entries_from_dir(&store.cache_dir(), &mut all_entries)?;
 
+    let mut entries = Vec::new();
     let mut units = Vec::new();
-    for entry in &entries {
+    for entry in all_entries {
+        if entry.cached_at < generation_id {
+            continue; // stale entry from a previous extraction
+        }
         let file_path = store.root().join(&entry.source_path);
         if passes_path_filter(&file_path, filter) {
             units.extend(entry.units.clone());
         }
+        entries.push(entry);
     }
 
     Ok((entries, units))
@@ -487,8 +506,9 @@ fn extract_and_analyze(
     ctx: &CheckContext,
     filter: &CheckFilter,
 ) -> Result<(ComputedMetrics, usize)> {
-    extract_rust(&ctx.store)?;
-    let (entries, units) = load_filtered_units(&ctx.store, filter)?;
+    let generation_id = extract_rust(&ctx.store)?;
+    let (entries, units) =
+        load_filtered_units(&ctx.store, filter, generation_id)?;
 
     if let CheckFilter::Symbol(symbol_id) = filter {
         if !units.iter().any(|u| u.id == *symbol_id) {

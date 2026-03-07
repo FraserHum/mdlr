@@ -52,6 +52,10 @@ struct Cli {
     /// Package names to extract from (if empty, extracts from all workspace members)
     #[arg(long)]
     package: Vec<String>,
+
+    /// Generation ID to stamp on all cache entries (used for stale-entry filtering)
+    #[arg(long)]
+    generation_id: Option<u64>,
 }
 
 fn main() {
@@ -126,9 +130,13 @@ fn run_standalone_mode(cli: &Cli) -> Result<()> {
     );
 
     // Create the executor
-    let exec: Arc<dyn cargo::core::compiler::Executor> = Arc::new(
-        executor::HirExtractExecutor::new(output_dir.clone(), target_packages),
-    );
+    let generation_id = cli.generation_id;
+    let exec: Arc<dyn cargo::core::compiler::Executor> =
+        Arc::new(executor::HirExtractExecutor::new(
+            output_dir.clone(),
+            target_packages,
+            generation_id,
+        ));
 
     // Run compilation with our custom executor.
     // Don't treat errors as fatal — some packages may fail to compile but
@@ -143,6 +151,8 @@ fn run_standalone_mode(cli: &Cli) -> Result<()> {
 struct HirExtractCallbacks {
     /// Output directory — per-file results are written as `<output_dir>/<source_path>.json`
     output_dir: PathBuf,
+    /// If set, use this value as `cached_at` instead of the current time.
+    generation_id: Option<u64>,
 }
 
 impl Callbacks for HirExtractCallbacks {
@@ -158,10 +168,12 @@ impl Callbacks for HirExtractCallbacks {
         // extraction; functions without errors get full call resolution.
         let units_by_file = visitor::extract_units(tcx);
 
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let timestamp = self.generation_id.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
 
         for (source_path, units) in units_by_file {
             let entry = FileCacheEntry {
