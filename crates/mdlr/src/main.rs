@@ -331,7 +331,6 @@ fn format_json_output(
     computed: &ComputedMetrics,
     config: &config::Config,
     extracted_count: usize,
-    cached_count: usize,
     filter: &CheckFilter,
 ) -> Result<()> {
     // When filtering by symbol, output specific metrics for that symbol
@@ -351,7 +350,6 @@ fn format_json_output(
     let output = serde_json::json!({
         "files": {
             "extracted": extracted_count,
-            "cached": cached_count,
         },
         "units": computed.graph.units.len(),
         "partial_units": partial_count,
@@ -529,7 +527,7 @@ fn handle_check(
             &ctx.store,
         ),
         OutputFormat::Json => {
-            format_json_output(&computed, &ctx.config, entry_count, 0, &filter)
+            format_json_output(&computed, &ctx.config, entry_count, &filter)
         }
     };
 

@@ -3,7 +3,6 @@ use super::types::FileCacheEntry;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const CACHE_DIR_NAME: &str = ".mdlr";
 const CACHE_SUBDIR: &str = "cache";
@@ -65,32 +64,10 @@ impl CacheStore {
         Ok(Some(entry))
     }
 
-    /// Save a cache entry for a source file.
-    pub fn save_entry(&self, entry: &FileCacheEntry) -> Result<()> {
-        let cache_path = self.cache_path(&entry.source_path);
-
-        if let Some(parent) = cache_path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("Failed to create cache directory: {:?}", parent)
-            })?;
-        }
-
-        let content = serde_json::to_string_pretty(entry)?;
-        fs::write(&cache_path, content).with_context(|| {
-            format!("Failed to write cache entry: {:?}", cache_path)
-        })?;
-        Ok(())
-    }
-
     /// Get an IgnoresStore for managing metric ignores.
     pub fn ignores(&self) -> IgnoresStore {
         IgnoresStore::new(self.mdlr_dir.clone())
     }
-}
-
-/// Get current timestamp as seconds since UNIX epoch.
-pub fn now_timestamp() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
 #[cfg(test)]

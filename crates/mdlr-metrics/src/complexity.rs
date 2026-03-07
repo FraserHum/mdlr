@@ -5,21 +5,22 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub struct ComplexityMetrics {
     /// Function/method size in lines of code
-    pub size: SizeMetrics,
+    pub size: DistributionMetrics,
     /// Parameter counts
     pub params: ParamMetrics,
     /// Cyclomatic complexity (branches + 1)
-    pub cyclomatic: CyclomaticMetrics,
+    pub cyclomatic: DistributionMetrics,
     /// Largest single scope block within each function
-    pub max_scope: MaxScopeMetrics,
+    pub max_scope: DistributionMetrics,
 }
 
+/// A distribution of usize values with summary statistics
 #[derive(Debug, Clone)]
-pub struct SizeMetrics {
+pub struct DistributionMetrics {
     pub max: usize,
     pub mean: f64,
     pub p90: usize,
-    /// Functions/methods sorted by size descending
+    /// Entries sorted by value descending
     pub distribution: Vec<(String, usize)>,
 }
 
@@ -28,24 +29,6 @@ pub struct ParamMetrics {
     pub max: usize,
     pub mean: f64,
     /// Functions/methods sorted by param count descending
-    pub distribution: Vec<(String, usize)>,
-}
-
-#[derive(Debug, Clone)]
-pub struct CyclomaticMetrics {
-    pub max: usize,
-    pub mean: f64,
-    pub p90: usize,
-    /// Functions/methods sorted by complexity descending
-    pub distribution: Vec<(String, usize)>,
-}
-
-#[derive(Debug, Clone)]
-pub struct MaxScopeMetrics {
-    pub max: usize,
-    pub mean: f64,
-    pub p90: usize,
-    /// Functions/methods sorted by max scope size descending
     pub distribution: Vec<(String, usize)>,
 }
 
@@ -82,10 +65,10 @@ impl ComplexityMetrics {
         }
 
         Self {
-            size: SizeMetrics::from_counts(sizes),
+            size: DistributionMetrics::from_counts(sizes),
             params: ParamMetrics::from_counts(params),
-            cyclomatic: CyclomaticMetrics::from_counts(cyclomatic),
-            max_scope: MaxScopeMetrics::from_counts(max_scope),
+            cyclomatic: DistributionMetrics::from_counts(cyclomatic),
+            max_scope: DistributionMetrics::from_counts(max_scope),
         }
     }
 
@@ -95,7 +78,7 @@ impl ComplexityMetrics {
     }
 }
 
-impl SizeMetrics {
+impl DistributionMetrics {
     fn from_counts(counts: HashMap<String, usize>) -> Self {
         if counts.is_empty() {
             return Self { max: 0, mean: 0.0, p90: 0, distribution: vec![] };
@@ -134,48 +117,9 @@ impl ParamMetrics {
     }
 }
 
-impl CyclomaticMetrics {
-    fn from_counts(counts: HashMap<String, usize>) -> Self {
-        if counts.is_empty() {
-            return Self { max: 0, mean: 0.0, p90: 0, distribution: vec![] };
-        }
-
-        let max = counts.values().copied().max().unwrap_or(0);
-        let sum: usize = counts.values().sum();
-        let mean = sum as f64 / counts.len() as f64;
-
-        let mut sorted_values: Vec<usize> = counts.values().copied().collect();
-        sorted_values.sort();
-        let p90_idx = (sorted_values.len() as f64 * 0.9).ceil() as usize - 1;
-        let p90 = sorted_values.get(p90_idx).copied().unwrap_or(max);
-
-        let mut distribution: Vec<_> = counts.into_iter().collect();
-        distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-
-        Self { max, mean, p90, distribution }
-    }
-}
-
-impl MaxScopeMetrics {
-    fn from_counts(counts: HashMap<String, usize>) -> Self {
-        if counts.is_empty() {
-            return Self { max: 0, mean: 0.0, p90: 0, distribution: vec![] };
-        }
-
-        let max = counts.values().copied().max().unwrap_or(0);
-        let sum: usize = counts.values().sum();
-        let mean = sum as f64 / counts.len() as f64;
-
-        let mut sorted_values: Vec<usize> = counts.values().copied().collect();
-        sorted_values.sort();
-        let p90_idx = (sorted_values.len() as f64 * 0.9).ceil() as usize - 1;
-        let p90 = sorted_values.get(p90_idx).copied().unwrap_or(max);
-
-        let mut distribution: Vec<_> = counts.into_iter().collect();
-        distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-
-        Self { max, mean, p90, distribution }
-    }
+/// Look up a value by name in a distribution, returning 0 if not found.
+fn lookup(distribution: &[(String, usize)], name: &str) -> usize {
+    distribution.iter().find(|(n, _)| n == name).map(|(_, v)| *v).unwrap_or(0)
 }
 
 impl std::fmt::Display for ComplexityMetrics {
@@ -205,7 +149,16 @@ impl std::fmt::Display for ComplexityMetrics {
             self.max_scope.max, self.max_scope.mean, self.max_scope.p90
         )?;
 
-        // Show top complex functions (by cyclomatic complexity)
+        self.fmt_complex_functions(f)?;
+        self.fmt_largest_functions(f)
+    }
+}
+
+impl ComplexityMetrics {
+    fn fmt_complex_functions(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
         let complex: Vec<_> = self
             .cyclomatic
             .distribution
@@ -213,34 +166,28 @@ impl std::fmt::Display for ComplexityMetrics {
             .filter(|(_, c)| *c > 1)
             .take(10)
             .collect();
-
-        if !complex.is_empty() {
-            writeln!(f)?;
-            writeln!(f, "Most Complex Functions:")?;
-            for (name, complexity) in complex {
-                let size = self
-                    .size
-                    .distribution
-                    .iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, s)| *s)
-                    .unwrap_or(0);
-                let params = self
-                    .params
-                    .distribution
-                    .iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, p)| *p)
-                    .unwrap_or(0);
-                writeln!(
-                    f,
-                    "  {} (cc={}, lines={}, params={})",
-                    name, complexity, size, params
-                )?;
-            }
+        if complex.is_empty() {
+            return Ok(());
         }
+        writeln!(f)?;
+        writeln!(f, "Most Complex Functions:")?;
+        for (name, complexity) in complex {
+            writeln!(
+                f,
+                "  {} (cc={}, lines={}, params={})",
+                name,
+                complexity,
+                lookup(&self.size.distribution, name),
+                lookup(&self.params.distribution, name),
+            )?;
+        }
+        Ok(())
+    }
 
-        // Show largest functions
+    fn fmt_largest_functions(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
         let large: Vec<_> = self
             .size
             .distribution
@@ -248,15 +195,14 @@ impl std::fmt::Display for ComplexityMetrics {
             .filter(|(_, s)| *s > 20)
             .take(10)
             .collect();
-
-        if !large.is_empty() {
-            writeln!(f)?;
-            writeln!(f, "Largest Functions:")?;
-            for (name, size) in large {
-                writeln!(f, "  {} ({} lines)", name, size)?;
-            }
+        if large.is_empty() {
+            return Ok(());
         }
-
+        writeln!(f)?;
+        writeln!(f, "Largest Functions:")?;
+        for (name, size) in large {
+            writeln!(f, "  {} ({} lines)", name, size)?;
+        }
         Ok(())
     }
 }
