@@ -85,6 +85,49 @@ fn compute_methods_per_struct(graph: &Graph) -> MethodsPerStruct {
     MethodsPerStruct { max, mean, p90, distribution }
 }
 
+/// Union-Find (disjoint set) data structure with path compression and union by rank.
+struct UnionFind {
+    parent: Vec<usize>,
+    rank: Vec<usize>,
+}
+
+impl UnionFind {
+    fn new(n: usize) -> Self {
+        Self { parent: (0..n).collect(), rank: vec![0; n] }
+    }
+
+    fn find(&mut self, i: usize) -> usize {
+        if self.parent[i] != i {
+            self.parent[i] = self.find(self.parent[i]);
+        }
+        self.parent[i]
+    }
+
+    fn union(&mut self, i: usize, j: usize) {
+        let ri = self.find(i);
+        let rj = self.find(j);
+        if ri != rj {
+            if self.rank[ri] < self.rank[rj] {
+                self.parent[ri] = rj;
+            } else if self.rank[ri] > self.rank[rj] {
+                self.parent[rj] = ri;
+            } else {
+                self.parent[rj] = ri;
+                self.rank[ri] += 1;
+            }
+        }
+    }
+
+    fn count_components(&mut self) -> usize {
+        let n = self.parent.len();
+        let mut roots: HashSet<usize> = HashSet::new();
+        for i in 0..n {
+            roots.insert(self.find(i));
+        }
+        roots.len()
+    }
+}
+
 /// Compute LCOM4 for a single struct using connected components.
 ///
 /// LCOM4 builds an undirected graph where methods are nodes. Two methods are
@@ -102,38 +145,7 @@ fn compute_struct_lcom4(methods: &[&mdlr_core::Unit]) -> usize {
         return 1;
     }
 
-    let n = methods.len();
-
-    // Union-Find
-    let mut parent: Vec<usize> = (0..n).collect();
-    let mut rank: Vec<usize> = vec![0; n];
-
-    fn find(parent: &mut Vec<usize>, i: usize) -> usize {
-        if parent[i] != i {
-            parent[i] = find(parent, parent[i]);
-        }
-        parent[i]
-    }
-
-    fn union(
-        parent: &mut Vec<usize>,
-        rank: &mut Vec<usize>,
-        i: usize,
-        j: usize,
-    ) {
-        let ri = find(parent, i);
-        let rj = find(parent, j);
-        if ri != rj {
-            if rank[ri] < rank[rj] {
-                parent[ri] = rj;
-            } else if rank[ri] > rank[rj] {
-                parent[rj] = ri;
-            } else {
-                parent[rj] = ri;
-                rank[ri] += 1;
-            }
-        }
-    }
+    let mut uf = UnionFind::new(methods.len());
 
     // Map each field to the method indices that access it
     let mut field_to_methods: HashMap<&String, Vec<usize>> = HashMap::new();
@@ -146,7 +158,7 @@ fn compute_struct_lcom4(methods: &[&mdlr_core::Unit]) -> usize {
     // Connect methods that share fields
     for method_indices in field_to_methods.values() {
         for window in method_indices.windows(2) {
-            union(&mut parent, &mut rank, window[0], window[1]);
+            uf.union(window[0], window[1]);
         }
     }
 
@@ -160,18 +172,12 @@ fn compute_struct_lcom4(methods: &[&mdlr_core::Unit]) -> usize {
     for (idx, method) in methods.iter().enumerate() {
         for call in &method.calls {
             if let Some(&called_idx) = method_id_to_idx.get(call.as_str()) {
-                union(&mut parent, &mut rank, idx, called_idx);
+                uf.union(idx, called_idx);
             }
         }
     }
 
-    // Count connected components
-    let mut roots: HashSet<usize> = HashSet::new();
-    for i in 0..n {
-        roots.insert(find(&mut parent, i));
-    }
-
-    roots.len()
+    uf.count_components()
 }
 
 fn compute_lcom(graph: &Graph) -> LcomMetrics {
