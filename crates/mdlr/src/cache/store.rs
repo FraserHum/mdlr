@@ -10,22 +10,19 @@ const CACHE_SUBDIR: &str = "cache";
 /// Store for managing the .mdlr cache directory.
 pub struct CacheStore {
     root: PathBuf,
-    cache_dir: PathBuf,
-    mdlr_dir: PathBuf,
 }
 
 impl CacheStore {
     /// Open or create a cache store at the given project root.
     pub fn open(root: &Path) -> Result<Self> {
         let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        let mdlr_dir = root.join(CACHE_DIR_NAME);
-        let cache_dir = mdlr_dir.join(CACHE_SUBDIR);
+        let cache_dir = root.join(CACHE_DIR_NAME).join(CACHE_SUBDIR);
 
         fs::create_dir_all(&cache_dir).with_context(|| {
             format!("Failed to create cache directory: {:?}", cache_dir)
         })?;
 
-        Ok(Self { root, cache_dir, mdlr_dir })
+        Ok(Self { root })
     }
 
     /// Get the project root path.
@@ -34,15 +31,15 @@ impl CacheStore {
     }
 
     /// Get the cache directory path (.mdlr/cache).
-    pub fn cache_dir(&self) -> &Path {
-        &self.cache_dir
+    pub fn cache_dir(&self) -> PathBuf {
+        self.root.join(CACHE_DIR_NAME).join(CACHE_SUBDIR)
     }
 
     /// Convert a source file path to its corresponding cache file path.
     /// e.g., src/foo.rs -> .mdlr/cache/src/foo.json
     pub fn cache_path(&self, source: &Path) -> PathBuf {
         let relative = source.strip_prefix(&self.root).unwrap_or(source);
-        let mut cache_file = self.cache_dir.join(relative);
+        let mut cache_file = self.cache_dir().join(relative);
         cache_file.set_extension("json");
         cache_file
     }
@@ -66,7 +63,7 @@ impl CacheStore {
 
     /// Get an IgnoresStore for managing metric ignores.
     pub fn ignores(&self) -> IgnoresStore {
-        IgnoresStore::new(self.mdlr_dir.clone())
+        IgnoresStore::new(self.root.join(CACHE_DIR_NAME))
     }
 }
 

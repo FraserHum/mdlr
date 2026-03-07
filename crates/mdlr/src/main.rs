@@ -469,7 +469,7 @@ fn load_filtered_units(
     filter: &CheckFilter,
 ) -> Result<(Vec<FileCacheEntry>, Vec<Unit>)> {
     let mut entries = Vec::new();
-    load_entries_from_dir(store.cache_dir(), &mut entries)?;
+    load_entries_from_dir(&store.cache_dir(), &mut entries)?;
 
     let mut units = Vec::new();
     for entry in &entries {
