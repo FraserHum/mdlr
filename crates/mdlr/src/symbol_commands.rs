@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::cache::CacheStore;
 use crate::cli::OutputFormat;
+use crate::find_project_root;
 use crate::walk::SourceWalker;
 use mdlr_core::{Unit, UnitKind};
 
@@ -39,7 +40,8 @@ pub fn handle_ls(
     kind_filter: Option<String>,
     format: OutputFormat,
 ) -> Result<()> {
-    let store = CacheStore::open(path)?;
+    let root = find_project_root(path);
+    let store = CacheStore::open(&root)?;
     let kind_filter = kind_filter.map(|k| parse_unit_kind(&k)).transpose()?;
     let all_units = collect_units(&store, kind_filter)?;
 
@@ -117,7 +119,8 @@ fn find_unit(store: &CacheStore, symbol: &str) -> Result<Unit> {
 
 /// Handle the 'get' command to retrieve a symbol
 pub fn handle_get(symbol: &str, format: OutputFormat) -> Result<()> {
-    let store = CacheStore::open(Path::new("."))?;
+    let root = find_project_root(Path::new("."));
+    let store = CacheStore::open(&root)?;
     let unit = find_unit(&store, symbol)?;
 
     // Read the source file and extract the span

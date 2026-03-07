@@ -2,8 +2,11 @@
 
 use anyhow::{Result, bail};
 
+use crate::cache::CacheStore;
 use crate::cli::MetricsCommand;
 use crate::config;
+use crate::find_project_root;
+use std::path::Path;
 
 fn get_metric_descriptions() -> Vec<(&'static str, &'static str)> {
     vec![
@@ -69,7 +72,9 @@ pub fn handle_metrics(command: MetricsCommand) -> Result<()> {
                     println!("  {}", description);
                     println!();
 
-                    let config = config::load()?;
+                    let root = find_project_root(Path::new("."));
+                    let store = CacheStore::open(&root)?;
+                    let config = config::load_from_dir(store.root())?;
                     if let Some(t) = config.thresholds.get(name) {
                         println!("thresholds:");
                         println!("  excellent  < {}", t.excellent);

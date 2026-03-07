@@ -30,6 +30,28 @@ use mdlr_metrics::{
 use metrics_rows::{MetricsBundle, collect_metric_rows};
 use symbol_commands::{handle_get, handle_ls};
 
+/// Walk up from `start_dir` and find the highest directory with both `.mdlr` and `.git`.
+/// Falls back to `start_dir` if none found.
+pub fn find_project_root(start_dir: &Path) -> PathBuf {
+    let start =
+        start_dir.canonicalize().unwrap_or_else(|_| start_dir.to_path_buf());
+    let mut current = start.as_path();
+    let mut highest: Option<&Path> = None;
+
+    loop {
+        if current.join(".mdlr").exists() && current.join(".git").exists() {
+            highest = Some(current);
+        }
+
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => break,
+        }
+    }
+
+    highest.map(|p| p.to_path_buf()).unwrap_or(start)
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -85,8 +107,9 @@ struct CheckContext {
 impl CheckContext {
     fn new() -> Result<Self> {
         let cwd = env::current_dir()?;
-        let store = CacheStore::find_or_create(&cwd)?;
-        let config = config::load()?;
+        let root = find_project_root(&cwd);
+        let store = CacheStore::open(&root)?;
+        let config = config::load_from_dir(store.root())?;
 
         Ok(CheckContext { cwd, store, config })
     }

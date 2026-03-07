@@ -1,51 +1,19 @@
 use super::types::Config;
 use anyhow::Result;
-use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-const CONFIG_DIR: &str = ".mdlr";
-const CONFIG_FILE: &str = "config.yaml";
-
-/// Find config file by searching recursively up from the given directory
-fn find_config_file(start_dir: &Path) -> Option<PathBuf> {
-    let mut current = start_dir.to_path_buf();
-
-    loop {
-        let config_path = current.join(CONFIG_DIR).join(CONFIG_FILE);
-        if config_path.exists() {
-            return Some(config_path);
-        }
-
-        if !current.pop() {
-            return None;
-        }
+/// Load configuration from .mdlr/config.yaml at the given project root.
+/// Returns default config if no file is found.
+pub fn load_from_dir(root: &Path) -> Result<Config> {
+    let config_path = root.join(".mdlr").join("config.yaml");
+    if config_path.exists() {
+        let contents = fs::read_to_string(&config_path)?;
+        let config: Config = serde_yaml::from_str(&contents)?;
+        Ok(config)
+    } else {
+        Ok(Config::default())
     }
-}
-
-/// Load configuration from .mdlr/config.yaml
-/// Searches recursively up from the current working directory
-/// Returns default config if no file is found
-/// TODO: Should load from project root
-pub fn load() -> Result<Config> {
-    load_from_dir(&env::current_dir()?)
-}
-
-/// Load configuration starting from a specific directory
-pub fn load_from_dir(start_dir: &Path) -> Result<Config> {
-    match find_config_file(start_dir) {
-        Some(path) => {
-            let contents = fs::read_to_string(&path)?;
-            let config: Config = serde_yaml::from_str(&contents)?;
-            Ok(config)
-        }
-        None => Ok(Config::default()),
-    }
-}
-
-/// Returns the path where config was found, if any
-pub fn find_config_path() -> Option<PathBuf> {
-    env::current_dir().ok().and_then(|dir| find_config_file(&dir))
 }
 
 #[cfg(test)]
@@ -86,7 +54,7 @@ thresholds:
     }
 
     #[test]
-    fn test_load_from_parent_dir() {
+    fn test_load_from_dir_does_not_search_parents() {
         let temp = TempDir::new().unwrap();
         let config_dir = temp.path().join(".mdlr");
         fs::create_dir(&config_dir).unwrap();
@@ -106,20 +74,8 @@ thresholds:
         let child_dir = temp.path().join("child").join("grandchild");
         fs::create_dir_all(&child_dir).unwrap();
 
+        // Should return default because child_dir has no .mdlr/config.yaml
         let config = load_from_dir(&child_dir).unwrap();
-        assert_eq!(config.thresholds.dag_density.excellent, 0.25);
-    }
-
-    #[test]
-    fn test_find_config_path() {
-        let temp = TempDir::new().unwrap();
-        let config_dir = temp.path().join(".mdlr");
-        fs::create_dir(&config_dir).unwrap();
-        let config_path = config_dir.join("config.yaml");
-        fs::write(&config_path, "thresholds: {}").unwrap();
-
-        let found = find_config_file(temp.path());
-        assert!(found.is_some());
-        assert_eq!(found.unwrap(), config_path);
+        assert_eq!(config.thresholds.dag_density.excellent, 0.5); // default
     }
 }

@@ -3,6 +3,8 @@
 use anyhow::{Result, bail};
 
 use crate::cache::{CacheStore, IgnoresStore};
+use crate::find_project_root;
+use std::io::IsTerminal;
 use std::path::Path;
 
 /// Valid metric names that can be ignored
@@ -18,14 +20,18 @@ const VALID_METRICS: &[&str] = &[
     "file_loc",
 ];
 
-// TODO: Make it so that agents cannot ignore, but humans can
 pub fn handle_ignore(
     metric: Option<String>,
     symbol: Option<String>,
     remove: bool,
     list: bool,
 ) -> Result<()> {
-    let store = CacheStore::open(Path::new("."))?;
+    if !std::io::stdin().is_terminal() {
+        bail!("mdlr ignore is only available in interactive (human) mode");
+    }
+
+    let root = find_project_root(Path::new("."));
+    let store = CacheStore::open(&root)?;
     let ignores_store = store.ignores();
 
     if list {
