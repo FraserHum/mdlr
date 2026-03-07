@@ -54,6 +54,7 @@ mdlr metrics get cyclomatic
 7. Ensure all existing tests continue to pass by running `cargo test`
 8. Update or add tests as needed to cover your changes
 9. If you add a new metric, CLI command, or language support, update the relevant documentation as specified in CLAUDE.md
+10. After you are done, commit your changes. **IMPORTANT** include auto somewhere in the commit message
 
 ## Important: Choose the Best Fix
 
