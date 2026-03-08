@@ -102,6 +102,9 @@ struct CheckContext {
     cwd: std::path::PathBuf,
     store: CacheStore,
     config: config::Config,
+    /// Generation ID (unix timestamp) shared across all extractors.
+    /// Cache entries with `cached_at < generation_id` are stale.
+    generation_id: u64,
 }
 
 impl CheckContext {
@@ -110,8 +113,12 @@ impl CheckContext {
         let root = find_project_root(&cwd);
         let store = CacheStore::open(&root)?;
         let config = config::load_from_dir(store.root())?;
+        let generation_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
-        Ok(CheckContext { cwd, store, config })
+        Ok(CheckContext { cwd, store, config, generation_id })
     }
 }
 
@@ -169,37 +176,19 @@ fn find_extract_rust_binary() -> Result<PathBuf> {
 
 /// Shell out to `mdlr-extract-rust` to extract units from all workspace members.
 ///
-/// Invokes `mdlr-extract-rust --manifest-path <path> --output <dir>`,
-/// writing per-file JSON results directly into the cache directory.
-///
-/// Returns a generation ID (unix timestamp) that was passed to the extractor.
-/// Cache entries with `cached_at < generation_id` are stale and should be filtered out.
+/// Only runs if a `Cargo.toml` exists at the workspace root.
 #[tracing::instrument(name = "extract", skip_all)]
-fn extract_rust(store: &CacheStore) -> Result<u64> {
+fn extract_rust(store: &CacheStore, generation_id: u64) -> Result<()> {
     let workspace_root = store.root();
 
-    // Find mdlr-extract-rust binary
-    let extract_bin = find_extract_rust_binary()?;
-
-    // Find the workspace Cargo.toml
+    // Skip if no Cargo workspace
     let manifest_path = workspace_root.join("Cargo.toml");
     if !manifest_path.exists() {
-        bail!("No Cargo.toml found at {}", manifest_path.display());
+        return Ok(());
     }
 
-    // Generate a generation ID so we can filter out stale cache entries
-    // (from deleted files or previous partial extractions).
-    let generation_id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let extract_bin = find_extract_rust_binary()?;
 
-    // Single invocation of mdlr-extract-rust in standalone mode.
-    // Output goes directly to .mdlr/cache/ so results are immediately
-    // available to ls/get commands.
-    // Suppress all output — cargo's Compiling/Checking/Finished lines and
-    // rustc diagnostics (via MDLR_QUIET_DIAGNOSTICS) are not useful to the
-    // end user. Run standalone for debugging.
     let status = std::process::Command::new(&extract_bin)
         .arg("--manifest-path")
         .arg(&manifest_path)
@@ -220,7 +209,87 @@ fn extract_rust(store: &CacheStore) -> Result<u64> {
         );
     }
 
-    Ok(generation_id)
+    Ok(())
+}
+
+/// Find the `mdlr-extract-ts` binary, checking next to our own binary first.
+fn find_extract_ts_binary() -> Option<PathBuf> {
+    if let Ok(current_exe) = env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            let sibling = dir.join("mdlr-extract-ts");
+            if sibling.exists() {
+                return Some(sibling);
+            }
+        }
+    }
+    if let Ok(output) =
+        std::process::Command::new("which").arg("mdlr-extract-ts").output()
+    {
+        if output.status.success() {
+            let path =
+                String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+    }
+    None
+}
+
+/// Detect whether the project has TypeScript/JavaScript files.
+fn has_ts_files(root: &Path) -> bool {
+    // Quick check: tsconfig.json or package.json
+    if root.join("tsconfig.json").exists()
+        || root.join("package.json").exists()
+    {
+        return true;
+    }
+    // Fallback: look for .ts/.tsx/.js/.jsx files (shallow check)
+    let walker =
+        ignore::WalkBuilder::new(root).hidden(true).max_depth(Some(3)).build();
+    for entry in walker.flatten() {
+        if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+            if matches!(ext, "ts" | "tsx" | "js" | "jsx") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Shell out to `mdlr-extract-ts` to extract units from TS/JS files.
+#[tracing::instrument(name = "extract_ts", skip_all)]
+fn extract_ts(store: &CacheStore, generation_id: u64) -> Result<()> {
+    let extract_bin = match find_extract_ts_binary() {
+        Some(bin) => bin,
+        None => return Ok(()), // silently skip if not available
+    };
+
+    let workspace_root = store.root();
+    if !has_ts_files(workspace_root) {
+        return Ok(());
+    }
+
+    let status = std::process::Command::new(&extract_bin)
+        .arg("--root")
+        .arg(workspace_root)
+        .arg("--output")
+        .arg(store.cache_dir())
+        .arg("--generation-id")
+        .arg(generation_id.to_string())
+        .current_dir(workspace_root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("Failed to run mdlr-extract-ts")?;
+
+    if !status.success() {
+        eprintln!(
+            "Warning: TS extraction had errors (results may be partial)"
+        );
+    }
+
+    Ok(())
 }
 
 /// Recursively load FileCacheEntry JSON files from a directory.
@@ -506,9 +575,13 @@ fn extract_and_analyze(
     ctx: &CheckContext,
     filter: &CheckFilter,
 ) -> Result<(ComputedMetrics, usize)> {
-    let generation_id = extract_rust(&ctx.store)?;
+    extract_rust(&ctx.store, ctx.generation_id)?;
+    if let Err(e) = extract_ts(&ctx.store, ctx.generation_id) {
+        eprintln!("Warning: TS extraction failed: {e:#}");
+    }
+
     let (entries, units) =
-        load_filtered_units(&ctx.store, filter, generation_id)?;
+        load_filtered_units(&ctx.store, filter, ctx.generation_id)?;
 
     if let CheckFilter::Symbol(symbol_id) = filter {
         if !units.iter().any(|u| u.id == *symbol_id) {

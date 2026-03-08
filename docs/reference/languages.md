@@ -1,12 +1,14 @@
 # Supported Languages
 
-mdlr uses the Rust compiler's HIR (High-level Intermediate Representation) for extraction, providing fully-resolved type information.
+mdlr supports multiple languages through dedicated extractor binaries that output `FileCacheEntry`-compatible JSON.
 
 ## Currently Supported
 
 | Language | Extensions | Status |
 |----------|------------|--------|
 | Rust | `.rs` | Full support |
+| TypeScript | `.ts`, `.tsx` | Full support |
+| JavaScript | `.js`, `.jsx` | Full support |
 
 ### Rust Extraction
 
@@ -28,11 +30,28 @@ Requires a nightly Rust toolchain with `rustc-dev` and `llvm-tools` components.
 
 See [HIR Extractor](hir-extract.md) for implementation details.
 
+### TypeScript/JavaScript Extraction
+
+The TypeScript extractor (`mdlr-extract-ts`) uses [SWC](https://swc.rs/) for parsing and identifies:
+
+- **Functions**: `function` declarations, `const foo = () => {}`, `const foo = function() {}`
+- **Classes**: `class` declarations (mapped to `Struct`)
+- **Methods**: class methods, constructors, getters (`get_x`), setters (`set_x`)
+- **Calls**: function calls, method calls, `new` expressions
+- **Field access**: `this.field` reads and writes
+- **Branches**: `if`, `switch`, `for`, `while`, `do-while`, `&&`, `||`, ternary `?:`
+- **Scopes**: largest nested block statement
+
+Unit ID format: `<relative_path>::<scope>::<name>` (e.g., `src/utils.ts::Calculator::add`).
+
+Not extracted: interfaces, type aliases, enums, namespaces (no runtime function bodies).
+
+Build with: `cargo install --path tools/mdlr-extract-ts`
+
 ## Planned
 
 | Language | Extensions | Status |
 |----------|------------|--------|
-| TypeScript | `.ts`, `.tsx` | Planned |
 | Go | `.go` | Planned |
 | Python | `.py` | Planned |
 
