@@ -54,7 +54,18 @@ mdlr metrics get cyclomatic
 7. Ensure all existing tests continue to pass by running `cargo test`
 8. Update or add tests as needed to cover your changes
 9. If you add a new metric, CLI command, or language support, update the relevant documentation as specified in CLAUDE.md
-10. After you are done, commit your changes. **IMPORTANT** include auto somewhere in the commit message
+10. **Commit your changes** (see Final Step below)
+
+## Final Step: Commit (MANDATORY)
+
+You MUST commit all changes before finishing. Do not skip this step. Do not end without committing.
+
+```bash
+git add <changed files>
+git commit -m "refactor: auto-reduce <metric> of <target>"
+```
+
+The commit message MUST include "auto" somewhere. Use the format above, substituting the metric name and target you improved.
 
 ## Important: Choose the Best Fix
 
