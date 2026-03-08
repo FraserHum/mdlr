@@ -53,9 +53,9 @@ struct CheckContext {
 }
 
 impl CheckContext {
-    fn new() -> Result<Self> {
+    fn new(explicit_root: Option<&Path>) -> Result<Self> {
         let cwd = env::current_dir()?;
-        let root = find_project_root(&cwd);
+        let root = find_project_root(&cwd, explicit_root);
         let store = CacheStore::open(&root)?;
         let config = config::load_from_dir(store.root())?;
         let generation_id = std::time::SystemTime::now()
@@ -378,9 +378,10 @@ pub fn handle_check(
     pretty: bool,
     format: OutputFormat,
     timing: bool,
+    explicit_root: Option<&Path>,
 ) -> Result<()> {
     let printer = setup_timing(timing);
-    let ctx = CheckContext::new()?;
+    let ctx = CheckContext::new(explicit_root)?;
     let filter = parse_check_filter(target, &ctx.cwd);
 
     let (computed, entry_count) = extract_and_analyze(&ctx, &filter)?;

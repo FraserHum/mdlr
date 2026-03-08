@@ -57,7 +57,10 @@ fn get_metric_descriptions() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-pub fn handle_metrics(command: MetricsCommand) -> Result<()> {
+pub fn handle_metrics(
+    command: MetricsCommand,
+    explicit_root: Option<&Path>,
+) -> Result<()> {
     match command {
         MetricsCommand::Ls => {
             for (name, description) in get_metric_descriptions() {
@@ -76,7 +79,8 @@ pub fn handle_metrics(command: MetricsCommand) -> Result<()> {
                     println!("  {}", description);
                     println!();
 
-                    let root = find_project_root(Path::new("."));
+                    let root =
+                        find_project_root(Path::new("."), explicit_root);
                     let store = CacheStore::open(&root)?;
                     let config = config::load_from_dir(store.root())?;
                     if let Some(t) = config.thresholds.get(name) {

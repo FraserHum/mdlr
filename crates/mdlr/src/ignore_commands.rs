@@ -25,12 +25,13 @@ pub fn handle_ignore(
     symbol: Option<String>,
     remove: bool,
     list: bool,
+    explicit_root: Option<&Path>,
 ) -> Result<()> {
     if !std::io::stdin().is_terminal() {
         bail!("mdlr ignore is only available in interactive (human) mode");
     }
 
-    let root = find_project_root(Path::new("."));
+    let root = find_project_root(Path::new("."), explicit_root);
     let store = CacheStore::open(&root)?;
     let ignores_store = store.ignores();
 

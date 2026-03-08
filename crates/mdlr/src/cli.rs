@@ -6,6 +6,10 @@ use std::path::PathBuf;
 #[command(about = "Modularity analyzer for code")]
 #[command(version)]
 pub struct Cli {
+    /// Project root directory (skips automatic discovery)
+    #[arg(long, global = true)]
+    pub root: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Command,
 }

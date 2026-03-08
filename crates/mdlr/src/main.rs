@@ -18,9 +18,17 @@ mod walk;
 use cli::{Cli, Command};
 use symbol_commands::{handle_get, handle_ls};
 
-/// Walk up from `start_dir` and find the highest directory with both `.mdlr` and `.git`.
+/// Resolve the project root: use the explicit root if provided, otherwise walk up
+/// from `start_dir` and find the highest directory with both `.mdlr` and `.git`.
 /// Falls back to `start_dir` if none found.
-pub fn find_project_root(start_dir: &Path) -> PathBuf {
+pub fn find_project_root(
+    start_dir: &Path,
+    explicit_root: Option<&Path>,
+) -> PathBuf {
+    if let Some(root) = explicit_root {
+        return root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    }
+
     let start =
         start_dir.canonicalize().unwrap_or_else(|_| start_dir.to_path_buf());
     let mut current = start.as_path();
@@ -42,19 +50,29 @@ pub fn find_project_root(start_dir: &Path) -> PathBuf {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let root = cli.root.as_deref();
 
     match cli.command {
         Command::Check { target, k, pretty, format, timing } => {
-            check::handle_check(target.as_deref(), k, pretty, format, timing)
+            check::handle_check(
+                target.as_deref(),
+                k,
+                pretty,
+                format,
+                timing,
+                root,
+            )
         }
         Command::Metrics { command } => {
-            metrics_commands::handle_metrics(command)
+            metrics_commands::handle_metrics(command, root)
         }
         Command::Prompt => handle_prompt(),
-        Command::Ls { path, kind, format } => handle_ls(&path, kind, format),
-        Command::Get { symbol, format } => handle_get(&symbol, format),
+        Command::Ls { path, kind, format } => {
+            handle_ls(&path, kind, format, root)
+        }
+        Command::Get { symbol, format } => handle_get(&symbol, format, root),
         Command::Ignore { metric, symbol, remove, list } => {
-            ignore_commands::handle_ignore(metric, symbol, remove, list)
+            ignore_commands::handle_ignore(metric, symbol, remove, list, root)
         }
     }
 }

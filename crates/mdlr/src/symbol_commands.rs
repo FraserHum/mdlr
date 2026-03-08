@@ -39,8 +39,9 @@ pub fn handle_ls(
     path: &Path,
     kind_filter: Option<String>,
     format: OutputFormat,
+    explicit_root: Option<&Path>,
 ) -> Result<()> {
-    let root = find_project_root(path);
+    let root = find_project_root(path, explicit_root);
     let store = CacheStore::open(&root)?;
     let kind_filter = kind_filter.map(|k| parse_unit_kind(&k)).transpose()?;
     let all_units = collect_units(&store, kind_filter)?;
@@ -118,8 +119,12 @@ fn find_unit(store: &CacheStore, symbol: &str) -> Result<Unit> {
 }
 
 /// Handle the 'get' command to retrieve a symbol
-pub fn handle_get(symbol: &str, format: OutputFormat) -> Result<()> {
-    let root = find_project_root(Path::new("."));
+pub fn handle_get(
+    symbol: &str,
+    format: OutputFormat,
+    explicit_root: Option<&Path>,
+) -> Result<()> {
+    let root = find_project_root(Path::new("."), explicit_root);
     let store = CacheStore::open(&root)?;
     let unit = find_unit(&store, symbol)?;
 
