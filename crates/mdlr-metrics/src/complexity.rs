@@ -10,6 +10,8 @@ pub struct ComplexityMetrics {
     pub params: ParamMetrics,
     /// Cyclomatic complexity (branches + 1)
     pub cyclomatic: DistributionMetrics,
+    /// Cognitive complexity (nesting-aware, SonarSource formulation)
+    pub cognitive: DistributionMetrics,
     /// Largest single scope block within each function
     pub max_scope: DistributionMetrics,
 }
@@ -39,6 +41,7 @@ impl ComplexityMetrics {
         let mut sizes: HashMap<String, usize> = HashMap::new();
         let mut params: HashMap<String, usize> = HashMap::new();
         let mut cyclomatic: HashMap<String, usize> = HashMap::new();
+        let mut cognitive: HashMap<String, usize> = HashMap::new();
         let mut max_scope: HashMap<String, usize> = HashMap::new();
 
         for unit in &graph.units {
@@ -60,6 +63,9 @@ impl ComplexityMetrics {
             // Cyclomatic = branches + 1
             cyclomatic.insert(unit.id.clone(), unit.branches + 1);
 
+            // Cognitive complexity
+            cognitive.insert(unit.id.clone(), unit.cognitive_complexity);
+
             // Max scope lines
             max_scope.insert(unit.id.clone(), unit.max_scope_lines);
         }
@@ -68,6 +74,7 @@ impl ComplexityMetrics {
             size: DistributionMetrics::from_counts(sizes),
             params: ParamMetrics::from_counts(params),
             cyclomatic: DistributionMetrics::from_counts(cyclomatic),
+            cognitive: DistributionMetrics::from_counts(cognitive),
             max_scope: DistributionMetrics::from_counts(max_scope),
         }
     }
@@ -142,6 +149,11 @@ impl std::fmt::Display for ComplexityMetrics {
             f,
             "Cyclomatic:    max={}, mean={:.1}, p90={}",
             self.cyclomatic.max, self.cyclomatic.mean, self.cyclomatic.p90
+        )?;
+        writeln!(
+            f,
+            "Cognitive:     max={}, mean={:.1}, p90={}",
+            self.cognitive.max, self.cognitive.mean, self.cognitive.p90
         )?;
         writeln!(
             f,
@@ -238,6 +250,7 @@ mod tests {
             branches,
             max_scope_lines: 0,
             parent: None,
+            cognitive_complexity: 0,
             partial: false,
         }
     }
@@ -267,6 +280,30 @@ mod tests {
 
         assert_eq!(metrics.params.max, 7);
         assert_eq!(metrics.params.distribution[0].0, "many_params");
+    }
+
+    fn make_function_with_cognitive(
+        id: &str,
+        branches: usize,
+        cognitive: usize,
+    ) -> Unit {
+        let mut u = make_function(id, 1, 10, 0, branches);
+        u.cognitive_complexity = cognitive;
+        u
+    }
+
+    #[test]
+    fn test_cognitive_metrics() {
+        let mut graph = Graph::new();
+        graph.add_unit(make_function_with_cognitive("flat", 3, 3)); // 3 flat ifs
+        graph.add_unit(make_function_with_cognitive("nested", 3, 9)); // 3 nested ifs (1+0 + 1+1 + 1+2 = 6... but say 9)
+        graph.add_unit(make_function_with_cognitive("simple", 0, 0));
+
+        let metrics = ComplexityMetrics::compute(&graph);
+
+        assert_eq!(metrics.cognitive.max, 9);
+        assert_eq!(metrics.cognitive.distribution[0].0, "nested");
+        assert_eq!(metrics.cognitive.distribution[0].1, 9);
     }
 
     #[test]

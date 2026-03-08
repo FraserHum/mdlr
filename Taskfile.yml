@@ -39,4 +39,6 @@ tasks:
   install:
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - cargo install --path . --root $HOME/.local
+      - cargo install --path crates/mdlr --root $HOME/.local
+      - cargo install --path tools/mdlr-extract-rust --root $HOME/.local
+      - cargo install --path tools/mdlr-extract-ts --root $HOME/.local

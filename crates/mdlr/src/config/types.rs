@@ -93,6 +93,8 @@ pub struct ThresholdsConfig {
     pub params: MetricThresholds,
     #[serde(default = "default_cyclomatic")]
     pub cyclomatic: MetricThresholds,
+    #[serde(default = "default_cognitive")]
+    pub cognitive: MetricThresholds,
     #[serde(default = "default_methods_per_struct")]
     pub methods_per_struct: MetricThresholds,
     #[serde(default = "default_lcom")]
@@ -137,6 +139,13 @@ mod defaults {
         good: 10.0,
         fair: 20.0,
         poor: 30.0,
+    };
+
+    pub const COGNITIVE: MetricThresholds = MetricThresholds {
+        excellent: 5.0,
+        good: 10.0,
+        fair: 15.0,
+        poor: 25.0,
     };
 
     pub const METHODS_PER_STRUCT: MetricThresholds = MetricThresholds {
@@ -190,6 +199,9 @@ fn default_params() -> MetricThresholds {
 fn default_cyclomatic() -> MetricThresholds {
     defaults::CYCLOMATIC
 }
+fn default_cognitive() -> MetricThresholds {
+    defaults::COGNITIVE
+}
 fn default_methods_per_struct() -> MetricThresholds {
     defaults::METHODS_PER_STRUCT
 }
@@ -214,6 +226,7 @@ impl Default for ThresholdsConfig {
             function_size: defaults::FUNCTION_SIZE,
             params: defaults::PARAMS,
             cyclomatic: defaults::CYCLOMATIC,
+            cognitive: defaults::COGNITIVE,
             methods_per_struct: defaults::METHODS_PER_STRUCT,
             lcom: defaults::LCOM,
             file_loc: defaults::FILE_LOC,
@@ -232,6 +245,7 @@ impl ThresholdsConfig {
             "function_size" => Some(&self.function_size),
             "params" => Some(&self.params),
             "cyclomatic" => Some(&self.cyclomatic),
+            "cognitive" => Some(&self.cognitive),
             "methods_per_struct" => Some(&self.methods_per_struct),
             "lcom" => Some(&self.lcom),
             "file_loc" => Some(&self.file_loc),

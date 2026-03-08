@@ -40,6 +40,7 @@ mdlr metrics get cyclomatic
 - **function_size**: Lines of code in a function. High = hard to understand/test
 - **file_loc**: Lines of code in a file. High = hard to navigate/maintain
 - **cyclomatic**: Branch complexity. High = hard to test/maintain
+- **cognitive**: Nesting-aware complexity. High = hard to understand (penalizes deep nesting)
 - **lcom**: Lack of cohesion. High = struct should be split
 - **methods_per_struct**: Methods in a struct. High = too many responsibilities
 

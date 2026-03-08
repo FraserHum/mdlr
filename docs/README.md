@@ -16,6 +16,7 @@ A modularity analyzer for code. Uses the Rust compiler's HIR (High-level Interme
 - [Fan-In](metrics/fan-in.md)
 - [Fan-Out](metrics/fan-out.md)
 - [Complexity](metrics/complexity.md) - function size, parameters, cyclomatic complexity, max scope
+- [Cognitive Complexity](metrics/cognitive-complexity.md) - nesting-aware complexity metric
 - [File LOC](metrics/file-loc.md) - lines of code per file
 - [Impl Metrics](metrics/impl-metrics.md) - methods per impl, traits per type, LCOM
 - [Interpreting Results](metrics/interpreting-results.md)

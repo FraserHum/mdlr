@@ -9,6 +9,7 @@ extern crate rustc_span;
 
 mod branches;
 mod calls;
+mod cognitive;
 mod executor;
 mod field_access;
 mod scopes;

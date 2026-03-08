@@ -1,5 +1,6 @@
 mod branches;
 mod calls;
+mod cognitive;
 mod field_access;
 mod scopes;
 mod visitor;

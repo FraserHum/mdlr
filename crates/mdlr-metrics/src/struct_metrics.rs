@@ -301,6 +301,7 @@ mod tests {
             branches: 0,
             max_scope_lines: 0,
             parent: None,
+            cognitive_complexity: 0,
             partial: false,
         }
     }
@@ -329,6 +330,7 @@ mod tests {
             branches: 0,
             max_scope_lines: 0,
             parent: Some(parent.to_string()),
+            cognitive_complexity: 0,
             partial: false,
         }
     }

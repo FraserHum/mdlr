@@ -6,6 +6,7 @@ use swc_ecma_visit::{Visit, VisitWith};
 
 use crate::branches;
 use crate::calls;
+use crate::cognitive;
 use crate::field_access;
 use crate::scopes;
 
@@ -77,24 +78,32 @@ impl<'a> UnitExtractor<'a> {
         let id = self.make_id(name);
         let unit_span = self.make_span(span);
 
-        let (call_targets, reads, writes, branch_count, max_scope) =
-            if let Some(block) = body {
-                let call_targets = calls::extract_calls_block(block);
-                let (reads, writes) =
-                    field_access::extract_field_access_block(block);
-                let branch_count = branches::count_branches_block(block);
-                let max_scope = scopes::max_scope_lines_block(block, self.sm);
-                (call_targets, reads, writes, branch_count, max_scope)
-            } else if let Some(expr) = expr_body {
-                let call_targets = calls::extract_calls_expr(expr);
-                let (reads, writes) =
-                    field_access::extract_field_access_expr(expr);
-                let branch_count = branches::count_branches_expr(expr);
-                // Arrow with expression body has no block scopes
-                (call_targets, reads, writes, branch_count, 0)
-            } else {
-                (vec![], vec![], vec![], 0, 0)
-            };
+        let (
+            call_targets,
+            reads,
+            writes,
+            branch_count,
+            max_scope,
+            cognitive_complexity,
+        ) = if let Some(block) = body {
+            let call_targets = calls::extract_calls_block(block);
+            let (reads, writes) =
+                field_access::extract_field_access_block(block);
+            let branch_count = branches::count_branches_block(block);
+            let max_scope = scopes::max_scope_lines_block(block, self.sm);
+            let cog = cognitive::compute_cognitive_block(block);
+            (call_targets, reads, writes, branch_count, max_scope, cog)
+        } else if let Some(expr) = expr_body {
+            let call_targets = calls::extract_calls_expr(expr);
+            let (reads, writes) =
+                field_access::extract_field_access_expr(expr);
+            let branch_count = branches::count_branches_expr(expr);
+            let cog = cognitive::compute_cognitive_expr(expr);
+            // Arrow with expression body has no block scopes
+            (call_targets, reads, writes, branch_count, 0, cog)
+        } else {
+            (vec![], vec![], vec![], 0, 0, 0)
+        };
 
         Unit {
             id,
@@ -109,6 +118,7 @@ impl<'a> UnitExtractor<'a> {
             branches: branch_count,
             max_scope_lines: max_scope,
             parent,
+            cognitive_complexity,
             partial: false,
         }
     }
@@ -282,6 +292,7 @@ impl Visit for UnitExtractor<'_> {
             branches: 0,
             max_scope_lines: 0,
             parent: None,
+            cognitive_complexity: 0,
             partial: false,
         };
         self.units.push(unit);
@@ -352,6 +363,7 @@ impl Visit for UnitExtractor<'_> {
                     branches: 0,
                     max_scope_lines: 0,
                     parent: None,
+                    cognitive_complexity: 0,
                     partial: false,
                 };
                 self.units.push(unit);

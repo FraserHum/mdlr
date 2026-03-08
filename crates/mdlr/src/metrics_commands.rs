@@ -35,6 +35,10 @@ fn get_metric_descriptions() -> Vec<(&'static str, &'static str)> {
             "Cyclomatic complexity (branches + 1) of a function. High values indicate complex control flow that is harder to test and maintain.",
         ),
         (
+            "cognitive",
+            "Cognitive complexity of a function. Unlike cyclomatic complexity, penalizes nesting depth — a branch inside a loop inside a branch costs more than three flat branches. High values indicate code that is hard to understand.",
+        ),
+        (
             "max_scope",
             "Largest single scope block (if/else body, match arm, loop body) within a function in lines. High values indicate oversized blocks that should be extracted.",
         ),

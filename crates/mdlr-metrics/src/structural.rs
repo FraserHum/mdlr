@@ -168,6 +168,7 @@ mod tests {
             branches: 0,
             max_scope_lines: 0,
             parent: None,
+            cognitive_complexity: 0,
             partial: false,
         }
     }

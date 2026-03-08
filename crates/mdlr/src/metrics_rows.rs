@@ -217,6 +217,12 @@ impl<'a> MetricSpecs<'a> {
                     min_value: 1,
                 },
                 IntMetricSpec {
+                    name: "cognitive",
+                    distribution: &m.complexity.cognitive.distribution,
+                    thresholds: &t.cognitive,
+                    min_value: 1,
+                },
+                IntMetricSpec {
                     name: "max_scope",
                     distribution: &m.complexity.max_scope.distribution,
                     thresholds: &t.max_scope,
@@ -287,6 +293,7 @@ const METRIC_ORDER: &[&str] = &[
     "function_size",
     "params",
     "cyclomatic",
+    "cognitive",
     "max_scope",
     "methods_per_struct",
     "file_loc",

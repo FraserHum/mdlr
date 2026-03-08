@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use crate::branches;
 use crate::calls;
+use crate::cognitive;
 use crate::field_access;
 use crate::scopes;
 
@@ -57,6 +58,8 @@ fn extract_fn_unit(
 
     let body = tcx.hir_body(body_id);
     let branch_count = branches::count_branches(tcx, body);
+    let cognitive_complexity =
+        cognitive::compute_cognitive_complexity(tcx, body);
     let max_scope = scopes::max_scope_lines(tcx, body);
     let (call_targets, calls_partial) =
         calls::extract_calls(tcx, def_id.to_def_id(), body);
@@ -75,6 +78,7 @@ fn extract_fn_unit(
         branches: branch_count,
         max_scope_lines: max_scope,
         parent: props.parent,
+        cognitive_complexity,
         partial: calls_partial,
     }
 }
@@ -103,6 +107,7 @@ fn extract_struct_unit(
         branches: 0,
         max_scope_lines: 0,
         parent: None,
+        cognitive_complexity: 0,
         partial: false,
     }
 }

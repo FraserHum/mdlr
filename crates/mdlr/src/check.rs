@@ -265,6 +265,11 @@ fn build_symbol_json(
             &t.cyclomatic,
         ),
         (
+            "cognitive",
+            &computed.complexity.cognitive.distribution,
+            &t.cognitive,
+        ),
+        (
             "max_scope",
             &computed.complexity.max_scope.distribution,
             &t.max_scope,
