@@ -24,6 +24,48 @@ struct FieldAccessVisitor {
     writes: Vec<String>,
 }
 
+/// Check if an expression is `this.field` and return the field name.
+fn this_field_name(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Member(member) => {
+            if matches!(&*member.obj, Expr::This(_)) {
+                match &member.prop {
+                    MemberProp::Ident(ident) => Some(ident.sym.to_string()),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        // this?.field
+        Expr::OptChain(opt) => match &*opt.base {
+            OptChainBase::Member(member) => {
+                if matches!(&*member.obj, Expr::This(_)) {
+                    match &member.prop {
+                        MemberProp::Ident(ident) => {
+                            Some(ident.sym.to_string())
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Check if expr is a call like `this.method(...)`. In that case
+/// `method` is NOT a field read.
+fn is_this_method_call(expr: &Expr) -> bool {
+    match expr {
+        Expr::Member(member) => matches!(&*member.obj, Expr::This(_)),
+        _ => false,
+    }
+}
+
 impl FieldAccessVisitor {
     fn record_read(&mut self, name: String) {
         if !self.reads.contains(&name) {
@@ -37,54 +79,10 @@ impl FieldAccessVisitor {
         }
     }
 
-    /// Check if an expression is `this.field` and return the field name.
-    fn this_field_name(expr: &Expr) -> Option<String> {
-        match expr {
-            Expr::Member(member) => {
-                if matches!(&*member.obj, Expr::This(_)) {
-                    match &member.prop {
-                        MemberProp::Ident(ident) => {
-                            Some(ident.sym.to_string())
-                        }
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            }
-            // this?.field
-            Expr::OptChain(opt) => match &*opt.base {
-                OptChainBase::Member(member) => {
-                    if matches!(&*member.obj, Expr::This(_)) {
-                        match &member.prop {
-                            MemberProp::Ident(ident) => {
-                                Some(ident.sym.to_string())
-                            }
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     /// Walk an expression collecting this.field reads, but skip the
     /// immediate this.field at the top (it was already recorded as write).
     fn walk_read_context(&mut self, expr: &Expr) {
         expr.visit_with(self);
-    }
-
-    /// Check if expr is a call like `this.method(...)`. In that case
-    /// `method` is NOT a field read.
-    fn is_this_method_call(expr: &Expr) -> bool {
-        match expr {
-            Expr::Member(member) => matches!(&*member.obj, Expr::This(_)),
-            _ => false,
-        }
     }
 }
 
@@ -95,7 +93,7 @@ impl Visit for FieldAccessVisitor {
             AssignTarget::Simple(simple) => match simple {
                 SimpleAssignTarget::Member(member) => {
                     if let Some(name) =
-                        Self::this_field_name(&Expr::Member(member.clone()))
+                        this_field_name(&Expr::Member(member.clone()))
                     {
                         self.record_write(name);
                         // Don't recurse into LHS (already handled)
@@ -113,7 +111,7 @@ impl Visit for FieldAccessVisitor {
 
     fn visit_update_expr(&mut self, n: &UpdateExpr) {
         // this.field++ / ++this.field → write
-        if let Some(name) = Self::this_field_name(&n.arg) {
+        if let Some(name) = this_field_name(&n.arg) {
             self.record_write(name);
             return;
         }
@@ -137,7 +135,7 @@ impl Visit for FieldAccessVisitor {
         // this.method() — `method` is NOT a field read, it's a call.
         // But this.field.method() — `field` IS a read.
         if let Callee::Expr(callee) = &n.callee {
-            if Self::is_this_method_call(callee) {
+            if is_this_method_call(callee) {
                 // Skip recording `method` as a field read — just recurse args
                 for arg in &n.args {
                     arg.expr.visit_with(self);

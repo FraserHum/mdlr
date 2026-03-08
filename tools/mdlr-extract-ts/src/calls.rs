@@ -19,19 +19,23 @@ struct CallVisitor {
     calls: Vec<String>,
 }
 
-impl CallVisitor {
-    fn record(&mut self, name: String) {
-        if !self.calls.contains(&name) {
-            self.calls.push(name);
+/// Build a call target string from a callee expression.
+fn callee_to_string(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Ident(ident) => Some(ident.sym.to_string()),
+        Expr::Member(member) => {
+            let obj = expr_to_string(&member.obj)?;
+            let prop = match &member.prop {
+                MemberProp::Ident(ident) => ident.sym.to_string(),
+                MemberProp::Computed(_) => return None,
+                MemberProp::PrivateName(p) => p.name.to_string(),
+            };
+            Some(format!("{obj}.{prop}"))
         }
-    }
-
-    /// Build a call target string from a callee expression.
-    fn callee_to_string(expr: &Expr) -> Option<String> {
-        match expr {
-            Expr::Ident(ident) => Some(ident.sym.to_string()),
-            Expr::Member(member) => {
-                let obj = Self::expr_to_string(&member.obj)?;
+        // Unwrap optional chaining: foo?.bar() → foo.bar
+        Expr::OptChain(opt) => match &*opt.base {
+            OptChainBase::Member(member) => {
+                let obj = expr_to_string(&member.obj)?;
                 let prop = match &member.prop {
                     MemberProp::Ident(ident) => ident.sym.to_string(),
                     MemberProp::Computed(_) => return None,
@@ -39,53 +43,47 @@ impl CallVisitor {
                 };
                 Some(format!("{obj}.{prop}"))
             }
-            // Unwrap optional chaining: foo?.bar() → foo.bar
-            Expr::OptChain(opt) => match &*opt.base {
-                OptChainBase::Member(member) => {
-                    let obj = Self::expr_to_string(&member.obj)?;
-                    let prop = match &member.prop {
-                        MemberProp::Ident(ident) => ident.sym.to_string(),
-                        MemberProp::Computed(_) => return None,
-                        MemberProp::PrivateName(p) => p.name.to_string(),
-                    };
-                    Some(format!("{obj}.{prop}"))
-                }
-                OptChainBase::Call(call) => {
-                    Self::callee_to_string(&call.callee)
-                }
-            },
-            // Unwrap TS type assertions: foo as Bar, foo!
-            Expr::TsAs(ts) => Self::callee_to_string(&ts.expr),
-            Expr::TsNonNull(ts) => Self::callee_to_string(&ts.expr),
-            _ => None,
-        }
+            OptChainBase::Call(call) => callee_to_string(&call.callee),
+        },
+        // Unwrap TS type assertions: foo as Bar, foo!
+        Expr::TsAs(ts) => callee_to_string(&ts.expr),
+        Expr::TsNonNull(ts) => callee_to_string(&ts.expr),
+        _ => None,
     }
+}
 
-    /// Convert an expression to a simple string for object parts.
-    fn expr_to_string(expr: &Expr) -> Option<String> {
-        match expr {
-            Expr::Ident(ident) => Some(ident.sym.to_string()),
-            Expr::This(_) => Some("this".to_string()),
-            Expr::Member(member) => {
-                let obj = Self::expr_to_string(&member.obj)?;
+/// Convert an expression to a simple string for object parts.
+fn expr_to_string(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Ident(ident) => Some(ident.sym.to_string()),
+        Expr::This(_) => Some("this".to_string()),
+        Expr::Member(member) => {
+            let obj = expr_to_string(&member.obj)?;
+            let prop = match &member.prop {
+                MemberProp::Ident(ident) => ident.sym.to_string(),
+                _ => return None,
+            };
+            Some(format!("{obj}.{prop}"))
+        }
+        Expr::OptChain(opt) => match &*opt.base {
+            OptChainBase::Member(member) => {
+                let obj = expr_to_string(&member.obj)?;
                 let prop = match &member.prop {
                     MemberProp::Ident(ident) => ident.sym.to_string(),
                     _ => return None,
                 };
                 Some(format!("{obj}.{prop}"))
             }
-            Expr::OptChain(opt) => match &*opt.base {
-                OptChainBase::Member(member) => {
-                    let obj = Self::expr_to_string(&member.obj)?;
-                    let prop = match &member.prop {
-                        MemberProp::Ident(ident) => ident.sym.to_string(),
-                        _ => return None,
-                    };
-                    Some(format!("{obj}.{prop}"))
-                }
-                _ => None,
-            },
             _ => None,
+        },
+        _ => None,
+    }
+}
+
+impl CallVisitor {
+    fn record(&mut self, name: String) {
+        if !self.calls.contains(&name) {
+            self.calls.push(name);
         }
     }
 }
@@ -93,7 +91,7 @@ impl CallVisitor {
 impl Visit for CallVisitor {
     fn visit_call_expr(&mut self, n: &CallExpr) {
         if let Callee::Expr(expr) = &n.callee {
-            if let Some(name) = Self::callee_to_string(expr) {
+            if let Some(name) = callee_to_string(expr) {
                 self.record(name);
             }
         }
@@ -108,7 +106,7 @@ impl Visit for CallVisitor {
     }
 
     fn visit_new_expr(&mut self, n: &NewExpr) {
-        if let Some(name) = Self::callee_to_string(&n.callee) {
+        if let Some(name) = callee_to_string(&n.callee) {
             self.record(name);
         }
         n.visit_children_with(self);
