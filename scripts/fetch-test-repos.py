@@ -2,22 +2,27 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "requests",
+#     "httpx",
+#     "typer",
 # ]
 # ///
-"""Fetch popular open-source repos from package registries for testing mdlr.
+"""Fetch popular open-source repos for testing mdlr.
 
-Queries crates.io and npm to find the most downloaded packages,
-resolves their GitHub repos, and clones them into test-repos/.
+Two modes:
+  fetch   - Clone the curated top-5 repos per language (default).
+  search  - Query package registries to discover top repos by popularity,
+            then rank by source lines of code. Useful for refreshing the
+            curated list.
 """
 
-import argparse
 import subprocess
-import sys
 import time
 from pathlib import Path
 
-import requests
+import httpx
+import typer
+
+app = typer.Typer(help="Fetch test repos for mdlr.")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPOS_DIR = SCRIPT_DIR.parent / "test-repos"
@@ -26,21 +31,41 @@ CRATES_IO_API = "https://crates.io/api/v1/crates"
 NPM_API = "https://registry.npmjs.org/-/v1/search"
 GITHUB_API = "https://api.github.com/repos"
 
-# Minimum repo size in KB to filter out trivially small packages
 MIN_REPO_SIZE_KB = 500
 
-# crates.io requires a user-agent
 HEADERS_CRATES = {"User-Agent": "mdlr-test-repo-fetcher (https://github.com/mdlr)"}
 
+# ── Curated repos (top 5 by source lines per language) ──────────────────
 
-def fetch_top_rust_repos(count: int) -> list[dict]:
+CURATED: dict[str, list[dict]] = {
+    "rust": [
+        {"name": "libc", "url": "https://github.com/rust-lang/libc"},
+        {"name": "regex", "url": "https://github.com/rust-lang/regex"},
+        {"name": "syn", "url": "https://github.com/dtolnay/syn"},
+        {"name": "memchr", "url": "https://github.com/BurntSushi/memchr"},
+        {"name": "serde", "url": "https://github.com/serde-rs/serde"},
+    ],
+    "typescript": [
+        {"name": "typescript-eslint", "url": "https://github.com/typescript-eslint/typescript-eslint"},
+        {"name": "babel", "url": "https://github.com/babel/babel"},
+        {"name": "jest", "url": "https://github.com/jestjs/jest"},
+        {"name": "zod", "url": "https://github.com/colinhacks/zod"},
+        {"name": "typebox", "url": "https://github.com/sinclairzx81/typebox-legacy"},
+    ],
+}
+
+
+# ── Registry fetchers (used by `search`) ────────────────────────────────
+
+
+def _fetch_top_rust_repos(count: int) -> list[dict]:
     """Fetch top Rust crates by download count from crates.io."""
-    repos = []
+    repos: list[dict] = []
     page = 1
-    per_page = min(count * 2, 100)  # fetch extra since some may lack a repo
+    per_page = min(count * 2, 100)
 
     while len(repos) < count:
-        resp = requests.get(
+        resp = httpx.get(
             CRATES_IO_API,
             params={"page": page, "per_page": per_page, "sort": "downloads"},
             headers=HEADERS_CRATES,
@@ -53,47 +78,44 @@ def fetch_top_rust_repos(count: int) -> list[dict]:
         for crate in crates:
             repo_url = crate.get("repository")
             if repo_url and "github.com" in repo_url:
-                # Normalize URL: strip .git suffix, trailing slashes
                 repo_url = repo_url.rstrip("/")
                 if repo_url.endswith(".git"):
                     repo_url = repo_url[:-4]
-                # Deduplicate by repo URL (monorepos publish multiple crates)
                 if not any(r["url"] == repo_url for r in repos):
                     repos.append({"name": crate["name"], "url": repo_url})
                     if len(repos) >= count:
                         break
 
         page += 1
-        time.sleep(1)  # respect crates.io rate limit
+        time.sleep(1)
 
     return repos
 
 
-def github_repo_size_kb(repo_url: str) -> int | None:
-    """Query GitHub API for repo size in KB. Returns None on failure."""
-    # Extract owner/repo from URL like https://github.com/owner/repo
+def _github_repo_size_kb(repo_url: str) -> int | None:
+    """Query GitHub API for repo size in KB."""
     parts = repo_url.rstrip("/").split("github.com/")[-1].split("/")
     if len(parts) < 2:
         return None
     owner_repo = f"{parts[0]}/{parts[1]}"
     try:
-        resp = requests.get(f"{GITHUB_API}/{owner_repo}", headers=HEADERS_CRATES)
-        time.sleep(1)  # respect GitHub unauthenticated rate limit (60 req/hour)
+        resp = httpx.get(f"{GITHUB_API}/{owner_repo}", headers=HEADERS_CRATES)
+        time.sleep(1)
         if resp.status_code == 200:
             return resp.json().get("size", 0)
-    except requests.RequestException:
+    except httpx.HTTPError:
         pass
     return None
 
 
-def fetch_top_typescript_repos(count: int) -> list[dict]:
+def _fetch_top_typescript_repos(count: int) -> list[dict]:
     """Fetch top TypeScript packages by popularity from npm."""
-    repos = []
+    repos: list[dict] = []
     offset = 0
-    size = min(count * 3, 250)  # fetch extra: many npm packages share a repo
+    size = min(count * 3, 250)
 
     while len(repos) < count:
-        resp = requests.get(
+        resp = httpx.get(
             NPM_API,
             params={
                 "text": "keywords:typescript",
@@ -114,22 +136,18 @@ def fetch_top_typescript_repos(count: int) -> list[dict]:
             links = pkg.get("links", {})
             repo_url = links.get("repository") or ""
 
-            # Only GitHub repos
             if "github.com" not in repo_url:
                 continue
 
-            # Normalize
             repo_url = repo_url.replace("git+", "").replace("git://", "https://")
             repo_url = repo_url.rstrip("/")
             if repo_url.endswith(".git"):
                 repo_url = repo_url[:-4]
 
-            # Deduplicate by repo URL (monorepos publish many packages)
             if any(r["url"] == repo_url for r in repos):
                 continue
 
-            # Filter out small repos
-            size_kb = github_repo_size_kb(repo_url)
+            size_kb = _github_repo_size_kb(repo_url)
             if size_kb is not None and size_kb < MIN_REPO_SIZE_KB:
                 print(f"  skip {pkg['name']} ({size_kb} KB < {MIN_REPO_SIZE_KB} KB)")
                 continue
@@ -143,66 +161,119 @@ def fetch_top_typescript_repos(count: int) -> list[dict]:
     return repos
 
 
-FETCHERS = {
-    "rust": fetch_top_rust_repos,
-    "typescript": fetch_top_typescript_repos,
+REGISTRY_FETCHERS = {
+    "rust": _fetch_top_rust_repos,
+    "typescript": _fetch_top_typescript_repos,
+}
+
+CLOC_LANG_KEY = {
+    "rust": "Rust",
+    "typescript": "TypeScript",
 }
 
 
-def clone_repo(name: str, url: str, dest: Path, shallow: bool) -> None:
+# ── Helpers ──────────────────────────────────────────────────────────────
+
+
+def _clone_repo(name: str, url: str, dest: Path) -> None:
     if dest.exists():
         print(f"  skip {name} (already exists)")
         return
-
     print(f"  clone {name} <- {url}")
-    cmd = ["git", "clone", "--quiet"]
-    if shallow:
-        cmd += ["--depth", "1"]
-    cmd += [url, str(dest)]
+    cmd = ["git", "clone", "--quiet", "--depth", "1", url, str(dest)]
     subprocess.run(cmd, check=True)
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Fetch popular repos from package registries for testing mdlr."
-    )
-    parser.add_argument(
-        "--lang",
-        choices=["rust", "typescript", "all"],
-        default="all",
-        help="Language to fetch repos for (default: all)",
-    )
-    parser.add_argument(
-        "--count",
-        type=int,
-        default=5,
-        help="Number of repos per language (default: 10)",
-    )
-    parser.add_argument(
-        "--shallow",
-        action="store_true",
-        help="Shallow clone (depth=1) to save disk space",
-    )
-    args = parser.parse_args()
+def _cloc_lines(path: Path, lang_key: str) -> int:
+    """Return source lines of `lang_key` in `path` using cloc --json."""
+    import json
 
-    langs = list(FETCHERS.keys()) if args.lang == "all" else [args.lang]
+    try:
+        result = subprocess.run(
+            ["cloc", str(path), "--json"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        data = json.loads(result.stdout)
+        return data.get(lang_key, {}).get("code", 0)
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return 0
 
-    for lang in langs:
-        print(f"[{lang}] fetching top {args.count} repos from registry...")
-        repos = FETCHERS[lang](args.count)
 
-        dest_dir = REPOS_DIR / lang
+# ── Commands ─────────────────────────────────────────────────────────────
+
+
+@app.command()
+def fetch(
+    lang: str = typer.Option("all", help="Language to fetch (rust, typescript, all)."),
+):
+    """Clone the curated top-5 repos per language."""
+    langs = list(CURATED.keys()) if lang == "all" else [lang]
+
+    for lg in langs:
+        repos = CURATED[lg]
+        dest_dir = REPOS_DIR / lg
         dest_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"[{lang}] cloning {len(repos)} repos:")
+        print(f"[{lg}] cloning {len(repos)} curated repos:")
         for repo in repos:
-            # Use repo name from URL (last path segment) for the directory
             dir_name = repo["url"].rstrip("/").split("/")[-1]
-            clone_repo(repo["name"], repo["url"], dest_dir / dir_name, args.shallow)
+            _clone_repo(repo["name"], repo["url"], dest_dir / dir_name)
+        print()
+
+    print(f"Done. Repos in {REPOS_DIR}")
+
+
+@app.command()
+def search(
+    lang: str = typer.Option("all", help="Language to search (rust, typescript, all)."),
+    count: int = typer.Option(20, help="Number of repos to fetch from registries."),
+    top: int = typer.Option(5, help="Number of top repos to keep after ranking by LOC."),
+):
+    """Discover top repos by popularity, clone them, rank by source LOC."""
+    langs = list(REGISTRY_FETCHERS.keys()) if lang == "all" else [lang]
+
+    for lg in langs:
+        cloc_key = CLOC_LANG_KEY[lg]
+
+        print(f"[{lg}] fetching top {count} repos from registry...")
+        repos = REGISTRY_FETCHERS[lg](count)
+
+        dest_dir = REPOS_DIR / lg
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"[{lg}] cloning {len(repos)} repos:")
+        for repo in repos:
+            dir_name = repo["url"].rstrip("/").split("/")[-1]
+            repo["dir"] = dest_dir / dir_name
+            _clone_repo(repo["name"], repo["url"], repo["dir"])
+
+        print(f"\n[{lg}] counting {cloc_key} lines of code...")
+        for repo in repos:
+            if "dir" not in repo:
+                dir_name = repo["url"].rstrip("/").split("/")[-1]
+                repo["dir"] = dest_dir / dir_name
+            repo["loc"] = _cloc_lines(repo["dir"], cloc_key)
+
+        repos.sort(key=lambda r: r["loc"], reverse=True)
+
+        print(f"\n[{lg}] top {top} repos by {cloc_key} LOC:")
+        for i, repo in enumerate(repos[:top], 1):
+            print(f"  {i}. {repo['name']:30s} {repo['loc']:>8,} lines  {repo['url']}")
+
+        # Remove repos outside the top N
+        keep_dirs = {r["dir"] for r in repos[:top]}
+        for repo in repos[top:]:
+            d = repo.get("dir")
+            if d and d.exists():
+                print(f"  remove {repo['name']} ({repo['loc']:,} lines)")
+                subprocess.run(["rm", "-rf", str(d)], check=True)
+
         print()
 
     print(f"Done. Repos in {REPOS_DIR}")
 
 
 if __name__ == "__main__":
-    main()
+    app()
