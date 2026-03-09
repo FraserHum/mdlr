@@ -28,6 +28,7 @@ tasks:
     cmds:
       - ln -sf ../target/debug/mdlr .
       - ln -sf ../target/debug/mdlr-extract-rust .
+      - ln -sf ../target/debug/mdlr-extract-ts .
 
   check:
     deps:

@@ -31,17 +31,6 @@ Update documentation when:
 - Link between related docs using relative paths
 - Update `docs/README.md` index when adding new files
 
-## Project Structure
-
-```
-crates/
-├── mdlr/                # CLI binary
-│   └── src/main.rs      # CLI entry point, HIR extraction orchestration
-├── mdlr-core/           # Core types (Unit, Edge, Graph)
-├── mdlr-metrics/        # Metric computation
-└── mdlr-extract-rust/   # RUSTC_WRAPPER binary for HIR-based extraction
-```
-
 ## Adding Features
 
 ### New Metric
@@ -73,3 +62,8 @@ crates/
 When changing CLI behavior, flags, or workflow:
 
 - Update `src/prompt.md` to reflect the changes (this is the agent-facing prompt output by `mdlr prompt`)
+
+## Running mdlr
+
+* **IMPORTANT**: Prefer to run `mdlr` as a direct binary, not via `cargo run`.
+* **IMPORTANT**: Use `task link` to build `mdlr` and the related tools.
