@@ -1,7 +1,9 @@
 use anyhow::{Result, bail};
+use std::collections::HashSet;
 use std::env;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process;
 
 use crate::cache::CacheStore;
 use crate::cli::OutputFormat;
@@ -26,11 +28,13 @@ enum CheckFilter {
     /// No filter - analyze entire project
     None,
     /// Filter by file path
-    File(std::path::PathBuf),
+    File(PathBuf),
     /// Filter by directory path
-    Directory(std::path::PathBuf),
+    Directory(PathBuf),
     /// Filter by symbol ID
     Symbol(String),
+    /// Filter by git diff — only files changed on the current branch
+    Diff(HashSet<PathBuf>),
 }
 
 /// Bundle of all computed metrics for a graph
@@ -98,8 +102,82 @@ fn passes_path_filter(file_path: &Path, filter: &CheckFilter) -> bool {
         CheckFilter::Directory(filter_path) => {
             file_path.starts_with(filter_path)
         }
+        CheckFilter::Diff(changed) => {
+            file_path.canonicalize().map_or(false, |p| changed.contains(&p))
+        }
         CheckFilter::Symbol(_) | CheckFilter::None => true,
     }
+}
+
+/// Detect the base branch by checking if `main` or `master` exists.
+fn detect_base_branch(root: &Path) -> Result<String> {
+    for branch in &["main", "master"] {
+        let output = process::Command::new("git")
+            .args(["rev-parse", "--verify", branch])
+            .current_dir(root)
+            .stdout(process::Stdio::null())
+            .stderr(process::Stdio::null())
+            .status()?;
+        if output.success() {
+            return Ok(branch.to_string());
+        }
+    }
+    bail!("Could not detect base branch: neither 'main' nor 'master' exists")
+}
+
+/// Get the set of files changed on the current branch relative to its base.
+/// Includes committed, staged, and unstaged changes (but not untracked files).
+fn diff_files(root: &Path) -> Result<HashSet<PathBuf>> {
+    let base = detect_base_branch(root)?;
+
+    // Find merge base
+    let merge_base_output = process::Command::new("git")
+        .args(["merge-base", "HEAD", &base])
+        .current_dir(root)
+        .output()?;
+    if !merge_base_output.status.success() {
+        bail!(
+            "git merge-base failed — are you on a branch that shares history with '{}'?",
+            base
+        );
+    }
+    let merge_base =
+        String::from_utf8_lossy(&merge_base_output.stdout).trim().to_string();
+
+    // Committed changes since merge base
+    let committed = git_diff_name_only(root, &[&merge_base, "HEAD"])?;
+    // Staged changes
+    let staged = git_diff_name_only(root, &["--cached"])?;
+    // Unstaged changes
+    let unstaged = git_diff_name_only(root, &[])?;
+
+    let mut changed = HashSet::new();
+    for rel in committed.iter().chain(staged.iter()).chain(unstaged.iter()) {
+        let abs = root.join(rel);
+        if let Ok(canonical) = abs.canonicalize() {
+            changed.insert(canonical);
+        }
+    }
+
+    Ok(changed)
+}
+
+/// Run `git diff --name-only` with the given extra args and return the list of paths.
+fn git_diff_name_only(root: &Path, args: &[&str]) -> Result<Vec<String>> {
+    let mut cmd = process::Command::new("git");
+    cmd.arg("diff").arg("--name-only");
+    for arg in args {
+        cmd.arg(arg);
+    }
+    let output = cmd.current_dir(root).output()?;
+    if !output.status.success() {
+        bail!("git diff --name-only failed");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect())
 }
 
 /// Compute all metrics from units
@@ -378,11 +456,17 @@ pub fn handle_check(
     pretty: bool,
     format: OutputFormat,
     timing: bool,
+    diff: bool,
     explicit_root: Option<&Path>,
 ) -> Result<()> {
     let printer = setup_timing(timing);
     let ctx = CheckContext::new(explicit_root)?;
-    let filter = parse_check_filter(target, &ctx.cwd);
+    let filter = if diff {
+        let changed = diff_files(ctx.store.root())?;
+        CheckFilter::Diff(changed)
+    } else {
+        parse_check_filter(target, &ctx.cwd)
+    };
 
     let (computed, entry_count) = extract_and_analyze(&ctx, &filter)?;
 
