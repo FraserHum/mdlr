@@ -1,7 +1,6 @@
-use rustc_hir as hir;
-use rustc_middle::ty::TyCtxt;
+use ra_ap_syntax::ast;
 
-use crate::walk::ExprVisitor;
+use crate::walk::CstVisitor;
 
 /// Extract field reads and writes from a function/method body.
 ///
@@ -10,16 +9,15 @@ use crate::walk::ExprVisitor;
 /// - Write: `self.field` in assignment LHS (`=`, `+=`, etc.)
 /// - `self.method()` is NOT a field read (it's a method call)
 /// - `self.field.method()` — `field` IS a read
-pub fn extract_field_access<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &hir::Body<'tcx>,
+pub fn extract_field_access(
+    body: &ast::BlockExpr,
 ) -> (Vec<String>, Vec<String>) {
     let mut reads = Vec::new();
     let mut writes = Vec::new();
 
     let mut visitor =
-        FieldAccessVisitor { tcx, reads: &mut reads, writes: &mut writes };
-    visitor.walk_expr(body.value, FieldContext::Read);
+        FieldAccessVisitor { reads: &mut reads, writes: &mut writes };
+    visitor.walk_block(body, FieldContext::Read);
     (reads, writes)
 }
 
@@ -31,14 +29,12 @@ enum FieldContext {
     WriteLhs,
 }
 
-struct FieldAccessVisitor<'a, 'tcx> {
-    tcx: TyCtxt<'tcx>,
+struct FieldAccessVisitor<'a> {
     reads: &'a mut Vec<String>,
     writes: &'a mut Vec<String>,
 }
 
-impl<'a, 'tcx> FieldAccessVisitor<'a, 'tcx> {
-    /// Record a field name as read or written (deduplicating).
+impl FieldAccessVisitor<'_> {
     fn record_field(&mut self, field_name: String, ctx: FieldContext) {
         let vec = match ctx {
             FieldContext::WriteLhs => &mut self.writes,
@@ -49,93 +45,72 @@ impl<'a, 'tcx> FieldAccessVisitor<'a, 'tcx> {
         }
     }
 
-    /// Walk assignment: LHS in write context, RHS in read context.
-    /// Used by both plain assignment and compound assignment (+=, etc.).
-    fn walk_write_and_read(
-        &mut self,
-        lhs: &hir::Expr<'tcx>,
-        rhs: &hir::Expr<'tcx>,
-    ) {
-        self.walk_preserving_ctx(lhs, FieldContext::WriteLhs);
-        self.walk_preserving_ctx(rhs, FieldContext::Read);
-    }
-
-    /// Walk a sub-expression preserving the parent context.
-    /// Used for expression forms (like indexing) that propagate write
-    /// context to their base expression so `self.items[i] = v` correctly
-    /// records `items` as a write.
-    fn walk_preserving_ctx(
-        &mut self,
-        expr: &hir::Expr<'tcx>,
-        ctx: FieldContext,
-    ) {
-        self.walk_expr(expr, ctx);
+    fn walk_write_and_read(&mut self, lhs: &ast::Expr, rhs: &ast::Expr) {
+        self.walk_expr(lhs, FieldContext::WriteLhs);
+        self.walk_expr(rhs, FieldContext::Read);
     }
 }
 
-impl<'a, 'tcx> ExprVisitor<'tcx> for FieldAccessVisitor<'a, 'tcx> {
+impl CstVisitor for FieldAccessVisitor<'_> {
     type Ctx = FieldContext;
 
-    fn tcx(&self) -> TyCtxt<'tcx> {
-        self.tcx
-    }
-
-    fn visit_field(
-        &mut self,
-        base: &hir::Expr<'tcx>,
-        ident: rustc_span::Ident,
-        ctx: FieldContext,
-    ) {
-        if is_self_expr(base) {
-            self.record_field(ident.as_str().to_string(), ctx);
-        } else {
-            // For chained access like self.field.subfield, the inner field IS a read
-            self.walk_preserving_ctx(base, FieldContext::Read);
+    fn visit_field(&mut self, expr: &ast::FieldExpr, ctx: FieldContext) {
+        if let Some(base) = expr.expr() {
+            if is_self_expr(&base) {
+                if let Some(name_ref) = expr.name_ref() {
+                    self.record_field(name_ref.text().to_string(), ctx);
+                }
+            } else {
+                // For chained access like self.field.subfield, the inner field IS a read
+                self.walk_expr(&base, FieldContext::Read);
+            }
         }
     }
 
     fn visit_assign(
         &mut self,
-        lhs: &hir::Expr<'tcx>,
-        rhs: &hir::Expr<'tcx>,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
         _ctx: FieldContext,
     ) {
         self.walk_write_and_read(lhs, rhs);
     }
 
-    fn visit_assign_op(
-        &mut self,
-        _op: hir::AssignOp,
-        lhs: &hir::Expr<'tcx>,
-        rhs: &hir::Expr<'tcx>,
-        _ctx: FieldContext,
-    ) {
-        self.walk_write_and_read(lhs, rhs);
-    }
-
-    fn visit_index(
-        &mut self,
-        base: &hir::Expr<'tcx>,
-        idx: &hir::Expr<'tcx>,
-        ctx: FieldContext,
-    ) {
-        self.walk_preserving_ctx(base, ctx);
-        self.walk_preserving_ctx(idx, FieldContext::Read);
+    fn visit_index(&mut self, expr: &ast::IndexExpr, ctx: FieldContext) {
+        // Propagate write context to base: `self.items[i] = v` → `items` is a write
+        if let Some(base) = expr.base() {
+            self.walk_expr(&base, ctx);
+        }
+        if let Some(idx) = expr.index() {
+            self.walk_expr(&idx, FieldContext::Read);
+        }
     }
 }
 
 /// Check if an expression refers to `self`.
-fn is_self_expr(expr: &hir::Expr<'_>) -> bool {
-    match &expr.kind {
-        hir::ExprKind::Path(hir::QPath::Resolved(_, path)) => {
-            if let Some(segment) = path.segments.last() {
-                segment.ident.as_str() == "self"
-            } else {
-                false
+fn is_self_expr(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::PathExpr(path_expr) => {
+            if let Some(path) = path_expr.path() {
+                if let Some(segment) = path.segment() {
+                    if let Some(name_ref) = segment.name_ref() {
+                        return name_ref.text() == "self";
+                    }
+                    // Also check for `self` keyword token
+                    return segment.self_token().is_some();
+                }
             }
+            false
         }
         // Handle deref: *self
-        hir::ExprKind::Unary(hir::UnOp::Deref, inner) => is_self_expr(inner),
+        ast::Expr::PrefixExpr(prefix) => {
+            if prefix.op_kind() == Some(ast::UnaryOp::Deref) {
+                if let Some(inner) = prefix.expr() {
+                    return is_self_expr(&inner);
+                }
+            }
+            false
+        }
         _ => false,
     }
 }

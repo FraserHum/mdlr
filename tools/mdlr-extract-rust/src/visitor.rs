@@ -1,8 +1,11 @@
 use mdlr_core::{Span, Unit, UnitKind};
-use rustc_hir as hir;
-use rustc_middle::ty::TyCtxt;
-use rustc_span::FileName;
-use rustc_span::def_id::{DefId, LOCAL_CRATE};
+use ra_ap_hir::{
+    Adt, Crate, Function, HasSource, Impl, Module, ModuleDef, Semantics,
+};
+use ra_ap_ide_db::RootDatabase;
+use ra_ap_syntax::ast::{self, HasAttrs};
+use ra_ap_syntax::{AstNode, TextRange};
+use ra_ap_vfs::Vfs;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -10,95 +13,261 @@ use crate::branches;
 use crate::calls;
 use crate::cognitive;
 use crate::field_access;
+use crate::path_util;
 use crate::scopes;
 
-/// Resolve a span to its source file path relative to cwd, or None if not a real file.
-fn resolve_source_key(
-    tcx: TyCtxt<'_>,
-    span: rustc_span::Span,
+/// A simple line index for mapping byte offsets to 1-based line/col positions.
+struct LineIndex {
+    line_starts: Vec<u32>,
+}
+
+impl LineIndex {
+    fn new(text: &str) -> Self {
+        let mut line_starts = vec![0u32];
+        for (i, b) in text.bytes().enumerate() {
+            if b == b'\n' {
+                line_starts.push((i + 1) as u32);
+            }
+        }
+        Self { line_starts }
+    }
+
+    fn line_col(&self, offset: u32) -> (usize, usize) {
+        match self.line_starts.binary_search(&offset) {
+            Ok(line) => (line + 1, 0),
+            Err(line) => {
+                let line_start = self.line_starts[line - 1];
+                (line, (offset - line_start) as usize)
+            }
+        }
+    }
+}
+
+fn make_span(line_index: &LineIndex, range: TextRange) -> Span {
+    let (start_line, start_col) =
+        line_index.line_col(u32::from(range.start()));
+    let (end_line, end_col) = line_index.line_col(u32::from(range.end()));
+    Span { start_line, start_col, end_line, end_col }
+}
+
+/// Per-file context to avoid redundant parsing and line index computation.
+struct FileContext {
+    source_key: String,
+    file_text: String,
+    line_index: LineIndex,
+}
+
+impl FileContext {
+    fn new(
+        vfs: &Vfs,
+        file_id: ra_ap_vfs::FileId,
+        cwd: &std::path::Path,
+    ) -> Option<Self> {
+        let source_key = resolve_source_key(vfs, file_id, cwd)?;
+        let file_text = get_file_text(vfs, file_id);
+        let line_index = LineIndex::new(&file_text);
+        Some(Self { source_key, file_text, line_index })
+    }
+}
+
+/// Extract units from all source files in the target crates.
+///
+/// Returns a map from relative source file path to the units found in that file.
+pub fn extract_units(
+    db: &RootDatabase,
+    sema: &Semantics<'_, RootDatabase>,
+    vfs: &Vfs,
+    target_crates: &[Crate],
     cwd: &std::path::Path,
-) -> Option<String> {
-    let filename = tcx.sess.source_map().span_to_filename(span);
-    let file_path = match &filename {
-        FileName::Real(real) => real.local_path().map(|p| p.to_path_buf()),
-        _ => None,
-    }?;
+) -> HashMap<String, Vec<Unit>> {
+    let mut results: HashMap<String, Vec<Unit>> = HashMap::new();
 
-    let abs_file =
-        if file_path.is_absolute() { file_path } else { cwd.join(&file_path) };
+    for krate in target_crates {
+        extract_crate(db, sema, vfs, krate, cwd, &mut results);
+    }
 
-    Some(
-        abs_file
-            .strip_prefix(cwd)
-            .unwrap_or(&abs_file)
-            .to_string_lossy()
-            .to_string(),
-    )
+    results
 }
 
-/// Properties that differ between standalone functions and methods.
-struct FnProps {
-    kind: UnitKind,
-    params: usize,
-    parent: Option<String>,
+fn extract_crate(
+    db: &RootDatabase,
+    sema: &Semantics<'_, RootDatabase>,
+    vfs: &Vfs,
+    krate: &Crate,
+    cwd: &std::path::Path,
+    results: &mut HashMap<String, Vec<Unit>>,
+) {
+    for module in krate.modules(db) {
+        extract_module(db, sema, vfs, &module, cwd, results);
+    }
 }
 
-/// Extract metrics from a function/method body and build a Unit.
-fn extract_fn_unit(
-    tcx: TyCtxt<'_>,
-    def_id: hir::def_id::LocalDefId,
-    body_id: hir::BodyId,
-    span: rustc_span::Span,
-    source_key: &str,
-    props: FnProps,
-) -> Unit {
-    let id = qualified_def_path_str(tcx, def_id.into());
-    let lo = tcx.sess.source_map().lookup_char_pos(span.lo());
-    let hi = tcx.sess.source_map().lookup_char_pos(span.hi());
+fn extract_module(
+    db: &RootDatabase,
+    sema: &Semantics<'_, RootDatabase>,
+    vfs: &Vfs,
+    module: &Module,
+    cwd: &std::path::Path,
+    results: &mut HashMap<String, Vec<Unit>>,
+) {
+    // Process top-level declarations
+    for def in module.declarations(db) {
+        match def {
+            ModuleDef::Function(func) => {
+                extract_function(db, sema, vfs, &func, None, cwd, results);
+            }
+            ModuleDef::Adt(Adt::Struct(strukt)) => {
+                extract_struct(db, vfs, &strukt, cwd, results);
+            }
+            _ => {}
+        }
+    }
 
-    let body = tcx.hir_body(body_id);
-    let branch_count = branches::count_branches(tcx, body);
-    let cognitive_complexity =
-        cognitive::compute_cognitive_complexity(tcx, body);
-    let max_scope = scopes::max_scope_lines(tcx, body);
+    // Process impl blocks
+    for impl_def in module.impl_defs(db) {
+        extract_impl_block(db, sema, vfs, &impl_def, cwd, results);
+    }
+}
+
+fn extract_function(
+    db: &RootDatabase,
+    sema: &Semantics<'_, RootDatabase>,
+    vfs: &Vfs,
+    func: &Function,
+    parent_id: Option<String>,
+    cwd: &std::path::Path,
+    results: &mut HashMap<String, Vec<Unit>>,
+) {
+    let source = match func.source(db) {
+        Some(s) => s,
+        None => return,
+    };
+
+    let editioned_file_id = match source.file_id.file_id() {
+        Some(id) => id,
+        None => return, // macro-expanded, skip
+    };
+    let file_id = editioned_file_id.file_id(db);
+
+    let fctx = match FileContext::new(vfs, file_id, cwd) {
+        Some(f) => f,
+        None => return,
+    };
+
+    let ast_fn = source.value;
+    let body = match ast_fn.body() {
+        Some(b) => b,
+        None => return, // no body (e.g. trait declaration without default)
+    };
+
+    let fn_range = ast_fn.syntax().text_range();
+    let is_method = parent_id.is_some();
+    let id = if let Some(ref parent) = parent_id {
+        path_util::qualified_method_path(
+            db,
+            ModuleDef::Function(*func),
+            parent,
+        )
+    } else {
+        path_util::qualified_path(db, ModuleDef::Function(*func))
+    };
+    let span = make_span(&fctx.line_index, fn_range);
+    let kind = if is_method { UnitKind::Method } else { UnitKind::Function };
+
+    let params = count_params(&ast_fn, is_method);
+    let branch_count = branches::count_branches(&body);
+    let cognitive_complexity = cognitive::compute_cognitive_complexity(&body);
+    let max_scope = scopes::max_scope_lines(&body, &fctx.file_text);
+
+    // For call resolution, we need AST nodes that are registered with Semantics.
+    // sema.parse() gives us a tree that Semantics can look up; HasSource gives
+    // us "detached" nodes that cause panics on resolve_method_call().
+    // Parse the file through Semantics, then locate the matching fn body by range.
     let (call_targets, calls_partial) =
-        calls::extract_calls(tcx, def_id.to_def_id(), body);
-    let (reads, writes) = field_access::extract_field_access(tcx, body);
+        extract_calls_via_sema(sema, db, editioned_file_id, fn_range);
 
-    Unit {
+    let (reads, writes) = field_access::extract_field_access(&body);
+
+    let unit = Unit {
         id,
-        kind: props.kind,
-        file: PathBuf::from(source_key),
-        span: make_span(&lo, &hi),
+        kind,
+        file: PathBuf::from(&fctx.source_key),
+        span,
         reads,
         writes,
         calls: call_targets,
         tags: vec![],
-        params: props.params,
+        params,
         branches: branch_count,
         max_scope_lines: max_scope,
-        parent: props.parent,
+        parent: parent_id,
         cognitive_complexity,
         partial: calls_partial,
-    }
+    };
+
+    results.entry(fctx.source_key).or_default().push(unit);
 }
 
-/// Build a Unit for a struct definition.
-fn extract_struct_unit(
-    tcx: TyCtxt<'_>,
-    def_id: hir::def_id::LocalDefId,
-    span: rustc_span::Span,
-    source_key: &str,
-) -> Unit {
-    let id = qualified_def_path_str(tcx, def_id.into());
-    let lo = tcx.sess.source_map().lookup_char_pos(span.lo());
-    let hi = tcx.sess.source_map().lookup_char_pos(span.hi());
+/// Extract calls using Semantics-parsed AST nodes.
+///
+/// We parse the file through `sema.parse()` to get nodes that Semantics can
+/// resolve, then find the function body by its text range.
+fn extract_calls_via_sema(
+    sema: &Semantics<'_, RootDatabase>,
+    db: &RootDatabase,
+    editioned_file_id: ra_ap_hir::EditionedFileId,
+    fn_range: TextRange,
+) -> (Vec<String>, bool) {
+    let source_file = sema.parse(editioned_file_id);
 
-    Unit {
+    // Find the ast::Fn node at the same range in the Semantics-owned tree
+    for node in source_file.syntax().descendants() {
+        if let Some(sema_fn) = ast::Fn::cast(node) {
+            if sema_fn.syntax().text_range() == fn_range {
+                if let Some(body) = sema_fn.body() {
+                    return calls::extract_calls(sema, db, &body);
+                }
+            }
+        }
+    }
+
+    // Couldn't find the function in the Semantics tree — mark as partial
+    (Vec::new(), true)
+}
+
+fn extract_struct(
+    db: &RootDatabase,
+    vfs: &Vfs,
+    strukt: &ra_ap_hir::Struct,
+    cwd: &std::path::Path,
+    results: &mut HashMap<String, Vec<Unit>>,
+) {
+    let source = match strukt.source(db) {
+        Some(s) => s,
+        None => return,
+    };
+
+    let editioned_file_id = match source.file_id.file_id() {
+        Some(id) => id,
+        None => return,
+    };
+    let file_id = editioned_file_id.file_id(db);
+
+    let fctx = match FileContext::new(vfs, file_id, cwd) {
+        Some(f) => f,
+        None => return,
+    };
+
+    let struct_range = source.value.syntax().text_range();
+    let id =
+        path_util::qualified_path(db, ModuleDef::Adt(Adt::Struct(*strukt)));
+    let span = make_span(&fctx.line_index, struct_range);
+
+    let unit = Unit {
         id,
         kind: UnitKind::Struct,
-        file: PathBuf::from(source_key),
-        span: make_span(&lo, &hi),
+        file: PathBuf::from(&fctx.source_key),
+        span,
         reads: vec![],
         writes: vec![],
         calls: vec![],
@@ -109,165 +278,126 @@ fn extract_struct_unit(
         parent: None,
         cognitive_complexity: 0,
         partial: false,
-    }
+    };
+
+    results.entry(fctx.source_key).or_default().push(unit);
 }
 
-/// Extract units from HIR for all source files in the crate.
-///
-/// Returns a map from relative source file path to the units found in that file.
-pub fn extract_units(tcx: TyCtxt<'_>) -> HashMap<String, Vec<Unit>> {
-    let mut results: HashMap<String, Vec<Unit>> = HashMap::new();
-    let cwd = std::env::current_dir().unwrap_or_default();
-
-    for item_id in tcx.hir_free_items() {
-        let item = tcx.hir_item(item_id);
-        let def_id = item.owner_id.def_id;
-        let span = item.span;
-
-        if span.from_expansion() || is_derived(tcx, def_id.to_def_id()) {
-            continue;
-        }
-
-        let source_key = match resolve_source_key(tcx, span, &cwd) {
-            Some(k) => k,
-            None => continue,
-        };
-
-        let units = results.entry(source_key.clone()).or_default();
-
-        match &item.kind {
-            hir::ItemKind::Struct(_ident, _generics, _variant_data) => {
-                units.push(extract_struct_unit(
-                    tcx,
-                    def_id,
-                    span,
-                    &source_key,
-                ));
-            }
-            hir::ItemKind::Fn { sig, body: body_id, .. } => {
-                let props = FnProps {
-                    kind: UnitKind::Function,
-                    params: count_params(sig.decl),
-                    parent: None,
-                };
-                units.push(extract_fn_unit(
-                    tcx,
-                    def_id,
-                    *body_id,
-                    span,
-                    &source_key,
-                    props,
-                ));
-            }
-            hir::ItemKind::Impl(impl_block) => {
-                visit_impl_block(tcx, impl_block, &source_key, units);
-            }
-            _ => {}
-        }
-    }
-
-    results
-}
-
-/// Visit an impl block and extract method units.
-fn visit_impl_block(
-    tcx: TyCtxt<'_>,
-    impl_block: &hir::Impl<'_>,
-    source_key: &str,
-    units: &mut Vec<Unit>,
+fn extract_impl_block(
+    db: &RootDatabase,
+    sema: &Semantics<'_, RootDatabase>,
+    vfs: &Vfs,
+    impl_def: &Impl,
+    cwd: &std::path::Path,
+    results: &mut HashMap<String, Vec<Unit>>,
 ) {
-    let parent_id = resolve_impl_self_type(tcx, impl_block);
+    // Skip auto-derived impls
+    if is_derived_impl(db, impl_def) {
+        return;
+    }
 
-    for &impl_item_id in impl_block.items {
-        let impl_item = tcx.hir_impl_item(impl_item_id);
+    let parent_id = resolve_impl_self_type(db, impl_def);
 
-        if impl_item.span.from_expansion() {
-            continue;
-        }
-
-        let def_id = impl_item.owner_id.def_id;
-        let span = impl_item.span;
-
-        match &impl_item.kind {
-            hir::ImplItemKind::Fn(sig, body_id) => {
-                let props = FnProps {
-                    kind: UnitKind::Method,
-                    params: count_params_method(sig.decl),
-                    parent: parent_id.clone(),
-                };
-                units.push(extract_fn_unit(
-                    tcx, def_id, *body_id, span, source_key, props,
-                ));
-            }
-            _ => {}
+    for item in impl_def.items(db) {
+        if let ra_ap_hir::AssocItem::Function(func) = item {
+            extract_function(
+                db,
+                sema,
+                vfs,
+                &func,
+                parent_id.clone(),
+                cwd,
+                results,
+            );
         }
     }
 }
 
-/// Resolve the self type of an impl block to a struct's def_path_str.
+/// Resolve the self type of an impl block to a struct's qualified path.
 fn resolve_impl_self_type(
-    tcx: TyCtxt<'_>,
-    impl_block: &hir::Impl<'_>,
+    db: &RootDatabase,
+    impl_def: &Impl,
 ) -> Option<String> {
-    if let hir::TyKind::Path(hir::QPath::Resolved(_, path)) =
-        &impl_block.self_ty.kind
-    {
-        if let hir::def::Res::Def(_, def_id) = path.res {
-            return Some(qualified_def_path_str(tcx, def_id.into()));
-        }
-    }
-    None
-}
-
-/// Count parameters for a standalone function (all params count).
-fn count_params(decl: &hir::FnDecl<'_>) -> usize {
-    decl.inputs.len()
-}
-
-/// Count parameters for a method, excluding self/&self/&mut self.
-fn count_params_method(decl: &hir::FnDecl<'_>) -> usize {
-    if decl.implicit_self.has_implicit_self() {
-        decl.inputs.len().saturating_sub(1)
+    let self_ty = impl_def.self_ty(db);
+    if let Some(adt) = self_ty.as_adt() {
+        Some(path_util::qualified_path(db, ModuleDef::Adt(adt)))
     } else {
-        decl.inputs.len()
+        None
     }
 }
 
-/// Check if a DefId or any of its ancestors is `#[automatically_derived]`.
-///
-/// This catches not just the top-level derive impl, but also nested items
-/// generated inside it (e.g. serde's `__Visitor` struct and its trait impls).
-fn is_derived(tcx: TyCtxt<'_>, mut def_id: rustc_hir::def_id::DefId) -> bool {
-    loop {
-        if tcx.is_automatically_derived(def_id) {
-            return true;
-        }
-        match tcx.opt_parent(def_id) {
-            Some(parent) => def_id = parent,
-            None => return false,
+/// Check if an impl block is automatically derived (e.g. #[derive(...)]).
+fn is_derived_impl(db: &RootDatabase, impl_def: &Impl) -> bool {
+    let source = match impl_def.source(db) {
+        Some(s) => s,
+        None => return false,
+    };
+
+    // Macro-expanded impls from derive macros
+    if source.file_id.file_id().is_none() {
+        return true;
+    }
+
+    // Check for #[automatically_derived] attr on the impl
+    for attr in source.value.attrs() {
+        if let Some(path) = attr.path() {
+            if path.syntax().text().to_string() == "automatically_derived" {
+                return true;
+            }
         }
     }
+
+    false
 }
 
-/// Return a fully-qualified path string for a DefId, always including the crate name.
-///
-/// `def_path_str` omits the crate name for local items. This function
-/// prepends it so that IDs are unambiguous across crates.
-pub fn qualified_def_path_str(tcx: TyCtxt<'_>, def_id: DefId) -> String {
-    let path = tcx.def_path_str(def_id);
-    if def_id.krate == LOCAL_CRATE {
-        let crate_name = tcx.crate_name(LOCAL_CRATE);
-        format!("{crate_name}::{path}")
+/// Resolve a file_id to its source file path relative to cwd, or None if not a real file.
+fn resolve_source_key(
+    vfs: &Vfs,
+    file_id: ra_ap_vfs::FileId,
+    cwd: &std::path::Path,
+) -> Option<String> {
+    let vfs_path = vfs.file_path(file_id);
+    let abs_path = vfs_path.as_path()?;
+    let file_path: &std::path::Path = abs_path.as_ref();
+
+    Some(
+        file_path
+            .strip_prefix(cwd)
+            .unwrap_or(file_path)
+            .to_string_lossy()
+            .to_string(),
+    )
+}
+
+/// Get the text content of a file, reading from disk via the VFS path.
+fn get_file_text(vfs: &Vfs, file_id: ra_ap_vfs::FileId) -> String {
+    let vfs_path = vfs.file_path(file_id);
+    if let Some(abs_path) = vfs_path.as_path() {
+        let path: &std::path::Path = abs_path.as_ref();
+        std::fs::read_to_string(path).unwrap_or_default()
     } else {
-        path
+        String::new()
     }
 }
 
-fn make_span(lo: &rustc_span::Loc, hi: &rustc_span::Loc) -> Span {
-    Span {
-        start_line: lo.line,
-        start_col: lo.col.0,
-        end_line: hi.line,
-        end_col: hi.col.0,
+/// Count parameters for a function, excluding self for methods.
+fn count_params(func: &ast::Fn, is_method: bool) -> usize {
+    let param_list = match func.param_list() {
+        Some(p) => p,
+        None => return 0,
+    };
+
+    let mut count = param_list.params().count();
+
+    // If this is a method and has a self param, don't count it
+    if is_method && param_list.self_param().is_some() {
+        // self param is separate from params() iterator, so count is already correct
+    } else if !is_method {
+        // For standalone functions, also count self_param if present (unusual but possible)
+        if param_list.self_param().is_some() {
+            count += 1;
+        }
     }
+
+    count
 }

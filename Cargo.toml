@@ -7,6 +7,9 @@ members = [
     "tools/mdlr-extract-rust",
     "tools/mdlr-extract-ts",
 ]
+exclude = [
+    "test-repos",
+]
 
 [workspace.package]
 version = "0.1.0"

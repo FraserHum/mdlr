@@ -1,112 +1,167 @@
-use rustc_hir as hir;
-use rustc_middle::ty::TyCtxt;
+use ra_ap_syntax::ast::{self, HasLoopBody};
+use ra_ap_syntax::{AstNode, TextRange};
 
-use crate::walk::ExprVisitor;
+use crate::walk::CstVisitor;
 
 /// Find the largest single scope block within a function body.
 ///
 /// Measures the line count of each scope-creating expression:
 /// - `if` then/else bodies
 /// - `match` arm bodies
-/// - `loop`/`while`/`for` bodies
+/// - `for`/`while`/`loop` bodies
 /// - Block expressions (`{}`)
 /// - Closures
 ///
 /// The function's own top-level block is excluded (that's `function_size`).
 /// Returns 0 for functions with no nested scope blocks.
-pub fn max_scope_lines<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &hir::Body<'tcx>,
-) -> usize {
-    let mut visitor = ScopeVisitor { tcx, max: 0 };
+pub fn max_scope_lines(body: &ast::BlockExpr, text: &str) -> usize {
+    let line_index = SimpleLineIndex::new(text);
+    let mut visitor = ScopeVisitor {
+        line_index: &line_index,
+        body_range: body.syntax().text_range(),
+        max: 0,
+    };
     // Walk into the top-level block's contents without measuring
     // the block itself (which would duplicate function_size).
-    if let hir::ExprKind::Block(block, _) = &body.value.kind {
-        visitor.walk_block(block);
-    } else {
-        // Expression-bodied function (e.g. closure) — walk directly
-        visitor.walk_expr(body.value, ());
+    if let Some(stmt_list) = body.stmt_list() {
+        visitor.walk_stmt_list(&stmt_list, ());
     }
     visitor.max
 }
 
-struct ScopeVisitor<'tcx> {
-    tcx: TyCtxt<'tcx>,
+/// Minimal line index: maps byte offsets to 1-based line numbers.
+struct SimpleLineIndex {
+    line_starts: Vec<u32>,
+}
+
+impl SimpleLineIndex {
+    fn new(text: &str) -> Self {
+        let mut line_starts = vec![0u32];
+        for (i, b) in text.bytes().enumerate() {
+            if b == b'\n' {
+                line_starts.push((i + 1) as u32);
+            }
+        }
+        Self { line_starts }
+    }
+
+    fn line_of(&self, offset: u32) -> usize {
+        match self.line_starts.binary_search(&offset) {
+            Ok(line) => line + 1,
+            Err(line) => line, // line is the index of the line_start *after* offset
+        }
+    }
+
+    fn range_lines(&self, range: TextRange) -> usize {
+        let start_line = self.line_of(u32::from(range.start()));
+        let end_line = self.line_of(u32::from(range.end()));
+        end_line.saturating_sub(start_line) + 1
+    }
+}
+
+struct ScopeVisitor<'a> {
+    line_index: &'a SimpleLineIndex,
+    body_range: TextRange,
     max: usize,
 }
 
-/// Compute the line count of a span, returning 0 for macro-expanded or dummy spans.
-fn span_lines(tcx: TyCtxt<'_>, span: rustc_span::Span) -> usize {
-    if span.from_expansion() || span.is_dummy() {
-        return 0;
-    }
-    let sm = tcx.sess.source_map();
-    let lo = sm.lookup_char_pos(span.lo());
-    let hi = sm.lookup_char_pos(span.hi());
-    hi.line.saturating_sub(lo.line) + 1
-}
-
-/// Record a scope span, updating max if it's larger.
-fn record_scope(tcx: TyCtxt<'_>, span: rustc_span::Span, max: &mut usize) {
-    let lines = span_lines(tcx, span);
-    if lines > *max {
-        *max = lines;
+impl ScopeVisitor<'_> {
+    fn record_scope(&mut self, range: TextRange) {
+        // Don't measure scopes from macro expansions or dummy ranges
+        if !self.body_range.contains_range(range) {
+            return;
+        }
+        let lines = self.line_index.range_lines(range);
+        if lines > self.max {
+            self.max = lines;
+        }
     }
 }
 
-impl<'tcx> ExprVisitor<'tcx> for ScopeVisitor<'tcx> {
+impl CstVisitor for ScopeVisitor<'_> {
     type Ctx = ();
 
-    fn tcx(&self) -> TyCtxt<'tcx> {
-        self.tcx
-    }
-
-    fn visit_if(
-        &mut self,
-        cond: &hir::Expr<'tcx>,
-        then_branch: &hir::Expr<'tcx>,
-        else_branch: Option<&hir::Expr<'tcx>>,
-        _ctx: (),
-    ) {
-        record_scope(self.tcx, then_branch.span, &mut self.max);
-        self.walk_expr(cond, ());
-        self.walk_expr(then_branch, ());
-        if let Some(else_br) = else_branch {
-            record_scope(self.tcx, else_br.span, &mut self.max);
-            self.walk_expr(else_br, ());
+    fn visit_if(&mut self, expr: &ast::IfExpr, _ctx: ()) {
+        if let Some(cond) = expr.condition() {
+            self.walk_expr(&cond, ());
         }
-    }
-
-    fn visit_match(
-        &mut self,
-        scrutinee: &hir::Expr<'tcx>,
-        arms: &'tcx [hir::Arm<'tcx>],
-        _source: hir::MatchSource,
-        _ctx: (),
-    ) {
-        self.walk_expr(scrutinee, ());
-        for arm in arms.iter() {
-            record_scope(self.tcx, arm.body.span, &mut self.max);
-            if let Some(guard) = &arm.guard {
-                self.walk_expr(guard, ());
+        if let Some(then_branch) = expr.then_branch() {
+            self.record_scope(then_branch.syntax().text_range());
+            self.walk_block(&then_branch, ());
+        }
+        if let Some(else_branch) = expr.else_branch() {
+            match else_branch {
+                ast::ElseBranch::Block(block) => {
+                    self.record_scope(block.syntax().text_range());
+                    self.walk_block(&block, ());
+                }
+                ast::ElseBranch::IfExpr(elif) => {
+                    self.record_scope(elif.syntax().text_range());
+                    self.walk_expr(&ast::Expr::from(elif), ());
+                }
             }
-            self.walk_expr(arm.body, ());
         }
     }
 
-    fn visit_loop(&mut self, block: &hir::Block<'tcx>, _ctx: ()) {
-        record_scope(self.tcx, block.span, &mut self.max);
-        self.walk_block(block);
+    fn visit_match(&mut self, expr: &ast::MatchExpr, _ctx: ()) {
+        if let Some(scrutinee) = expr.expr() {
+            self.walk_expr(&scrutinee, ());
+        }
+        if let Some(arm_list) = expr.match_arm_list() {
+            for arm in arm_list.arms() {
+                if let Some(body) = arm.expr() {
+                    self.record_scope(body.syntax().text_range());
+                }
+                if let Some(guard) = arm.guard() {
+                    if let Some(guard_expr) = guard.condition() {
+                        self.walk_expr(&guard_expr, ());
+                    }
+                }
+                if let Some(body) = arm.expr() {
+                    self.walk_expr(&body, ());
+                }
+            }
+        }
     }
 
-    fn visit_block_expr(&mut self, block: &hir::Block<'tcx>, _ctx: ()) {
-        record_scope(self.tcx, block.span, &mut self.max);
-        self.walk_block(block);
+    fn visit_for(&mut self, expr: &ast::ForExpr, _ctx: ()) {
+        if let Some(iterable) = expr.iterable() {
+            self.walk_expr(&iterable, ());
+        }
+        if let Some(body) = expr.loop_body() {
+            self.record_scope(body.syntax().text_range());
+            self.walk_block(&body, ());
+        }
     }
 
-    fn visit_closure(&mut self, closure: &'tcx hir::Closure<'tcx>, _ctx: ()) {
-        let body = self.tcx.hir_body(closure.body);
-        record_scope(self.tcx, body.value.span, &mut self.max);
-        self.walk_expr(body.value, ());
+    fn visit_while(&mut self, expr: &ast::WhileExpr, _ctx: ()) {
+        if let Some(cond) = expr.condition() {
+            self.walk_expr(&cond, ());
+        }
+        if let Some(body) = expr.loop_body() {
+            self.record_scope(body.syntax().text_range());
+            self.walk_block(&body, ());
+        }
+    }
+
+    fn visit_loop(&mut self, expr: &ast::LoopExpr, _ctx: ()) {
+        if let Some(body) = expr.loop_body() {
+            self.record_scope(body.syntax().text_range());
+            self.walk_block(&body, ());
+        }
+    }
+
+    fn visit_block_expr(&mut self, block: &ast::BlockExpr, _ctx: ()) {
+        self.record_scope(block.syntax().text_range());
+        if let Some(stmt_list) = block.stmt_list() {
+            self.walk_stmt_list(&stmt_list, ());
+        }
+    }
+
+    fn visit_closure(&mut self, closure: &ast::ClosureExpr, _ctx: ()) {
+        if let Some(body) = closure.body() {
+            self.record_scope(body.syntax().text_range());
+            self.walk_expr(&body, ());
+        }
     }
 }
