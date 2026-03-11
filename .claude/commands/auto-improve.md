@@ -1,1 +1,0 @@
-../../crates/mdlr/src/prompt.md

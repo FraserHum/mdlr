@@ -2,15 +2,16 @@
 
 Use mdlr to identify and improve modularity issues in the codebase.
 
-**IMPORTANT**: Never use cargo run. Always use `task link` to build `mdlr` and then use `mdlr` directly as a binary.
-
 ## mdlr Reference
 
 ### Quick Start
 
 ```bash
-# Analyze codebase and show top opportunities per metric
+# Analyze codebase (diff mode on branches, all files on main/master)
 mdlr check
+
+# Force all files even when on a branch
+mdlr check -A
 
 # Analyze specific directory or file
 mdlr check src/metrics
@@ -56,17 +57,6 @@ mdlr metrics get cyclomatic
 8. Update or add tests as needed to cover your changes
 9. If you add a new metric, CLI command, or language support, update the relevant documentation as specified in CLAUDE.md
 10. **Commit your changes** (see Final Step below)
-
-## Final Step: Commit (MANDATORY)
-
-You MUST commit all changes before finishing. Do not skip this step. Do not end without committing.
-
-```bash
-git add <changed files>
-git commit -m "refactor: auto-reduce <metric> of <target>"
-```
-
-The commit message MUST include "auto" somewhere. Use the format above, substituting the metric name and target you improved.
 
 ## Important: Choose the Best Fix
 
