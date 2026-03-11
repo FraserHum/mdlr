@@ -32,9 +32,9 @@ pub enum Command {
         /// Show timing breakdown for each phase
         #[arg(long)]
         timing: bool,
-        /// Only analyze files changed on the current branch (relative to main/master)
-        #[arg(long)]
-        diff: bool,
+        /// Analyze all files even when on a branch (default: diff mode on branches, all on main/master)
+        #[arg(short = 'A', long)]
+        all: bool,
     },
     /// List supported metrics with descriptions
     Metrics {

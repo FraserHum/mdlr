@@ -14,7 +14,7 @@
 Run analysis and display metrics.
 
 ```bash
-mdlr check [target] [-k <count>] [--pretty] [--format <format>]
+mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A]
 ```
 
 | Option | Default | Description |
@@ -23,17 +23,20 @@ mdlr check [target] [-k <count>] [--pretty] [--format <format>]
 | `-k` | `3` | Max opportunities to show per metric (-1 for all) |
 | `--pretty` | false | Pretty print as aligned table |
 | `--format` | `text` | Output format: `text` or `json` |
+| `-A, --all` | false | Analyze all files even when on a branch |
+
+By default, `check` uses **diff mode** on branches (only analyzing files changed since main/master) and analyzes all files when on main/master. Use `-A` to force analyzing all files when on a branch.
 
 Running `check` extracts all files and writes results to the cache.
 
 **Examples:**
 
 ```bash
-# Analyze current directory (read-only)
+# Analyze (diff mode on branches, all files on main/master)
 mdlr check
 
-# Analyze current directory
-mdlr check
+# Force all files even when on a branch
+mdlr check -A
 
 # Analyze specific directory
 mdlr check ./src/metrics

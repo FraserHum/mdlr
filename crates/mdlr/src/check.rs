@@ -109,6 +109,21 @@ fn passes_path_filter(file_path: &Path, filter: &CheckFilter) -> bool {
     }
 }
 
+/// Check if the current HEAD is on the base branch (main or master).
+fn is_on_base_branch(root: &Path) -> bool {
+    let output = process::Command::new("git")
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .current_dir(root)
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let branch = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            branch == "main" || branch == "master"
+        }
+        _ => false,
+    }
+}
+
 /// Detect the base branch by checking if `main` or `master` exists.
 fn detect_base_branch(root: &Path) -> Result<String> {
     for branch in &["main", "master"] {
@@ -456,16 +471,21 @@ pub fn handle_check(
     pretty: bool,
     format: OutputFormat,
     timing: bool,
-    diff: bool,
+    all: bool,
     explicit_root: Option<&Path>,
 ) -> Result<()> {
     let printer = setup_timing(timing);
     let ctx = CheckContext::new(explicit_root)?;
-    let filter = if diff {
+    let filter = if target.is_some() || all {
+        // Explicit target or --all flag: skip diff mode
+        parse_check_filter(target, &ctx.cwd)
+    } else if is_on_base_branch(ctx.store.root()) {
+        // On main/master: analyze everything
+        CheckFilter::None
+    } else {
+        // On a branch: diff mode by default
         let changed = diff_files(ctx.store.root())?;
         CheckFilter::Diff(changed)
-    } else {
-        parse_check_filter(target, &ctx.cwd)
     };
 
     let (computed, entry_count) = extract_and_analyze(&ctx, &filter)?;
