@@ -597,3 +597,107 @@ class App {
     assert!(units.contains_key("src/app.js::App"));
     assert!(units.contains_key("src/app.js::App::run"));
 }
+
+// ---- Parameter field access tests ----
+
+#[test]
+fn param_field_read() {
+    let units = extract(
+        r#"
+interface Point { x: number; y: number; }
+
+function distance(p: Point): number {
+    return p.x * p.x + p.y * p.y;
+}
+"#,
+    );
+
+    let f = &units["src/test.ts::distance"];
+    assert!(
+        f.reads.contains(&"p.x".to_string()),
+        "should read p.x, got {:?}",
+        f.reads
+    );
+    assert!(
+        f.reads.contains(&"p.y".to_string()),
+        "should read p.y, got {:?}",
+        f.reads
+    );
+    assert!(f.writes.is_empty(), "should have no writes, got {:?}", f.writes);
+}
+
+#[test]
+fn param_field_write() {
+    let units = extract(
+        r#"
+interface Point { x: number; y: number; }
+
+function reset(p: Point) {
+    p.x = 0;
+}
+"#,
+    );
+
+    let f = &units["src/test.ts::reset"];
+    assert!(
+        f.writes.contains(&"p.x".to_string()),
+        "should write p.x, got {:?}",
+        f.writes
+    );
+}
+
+#[test]
+fn param_method_call_not_read() {
+    let units = extract(
+        r#"
+function run_it(s: string) {
+    s.trim();
+}
+"#,
+    );
+
+    let f = &units["src/test.ts::run_it"];
+    assert!(
+        !f.reads.iter().any(|r| r.starts_with("s.")),
+        "param.method() should not be a field read, got {:?}",
+        f.reads
+    );
+}
+
+#[test]
+fn method_with_param_field_access() {
+    let units = extract(
+        r#"
+class Point {
+    x: number;
+    y: number;
+
+    constructor(x: number, y: number) {
+        this.x = x;
+        this.y = y;
+    }
+
+    add(other: Point) {
+        this.x += other.x;
+        this.y += other.y;
+    }
+}
+"#,
+    );
+
+    let f = &units["src/test.ts::Point::add"];
+    // self fields (bare names)
+    assert!(f.writes.contains(&"x".to_string()), "should write x");
+    assert!(f.writes.contains(&"y".to_string()), "should write y");
+    // param fields (prefixed)
+    assert!(
+        f.reads.contains(&"other.x".to_string()),
+        "should read other.x, got {:?}",
+        f.reads
+    );
+    assert!(
+        f.reads.contains(&"other.y".to_string()),
+        "should read other.y, got {:?}",
+        f.reads
+    );
+}

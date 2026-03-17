@@ -500,6 +500,105 @@ pub fn complex(items: &[i32]) -> i32 {
     );
 }
 
+// ---- Parameter field access tests ----
+
+#[test]
+fn param_field_read() {
+    let units = extract(
+        r#"
+pub struct Point { pub x: f64, pub y: f64 }
+
+pub fn distance(p: &Point) -> f64 {
+    p.x * p.x + p.y * p.y
+}
+"#,
+    );
+
+    let f = &units["test_crate::distance"];
+    assert!(
+        f.reads.contains(&"p.x".to_string()),
+        "should read p.x, got {:?}",
+        f.reads
+    );
+    assert!(
+        f.reads.contains(&"p.y".to_string()),
+        "should read p.y, got {:?}",
+        f.reads
+    );
+    assert!(f.writes.is_empty(), "should have no writes, got {:?}", f.writes);
+}
+
+#[test]
+fn param_field_write() {
+    let units = extract(
+        r#"
+pub struct Point { pub x: f64, pub y: f64 }
+
+pub fn reset(p: &mut Point) {
+    p.x = 0.0;
+}
+"#,
+    );
+
+    let f = &units["test_crate::reset"];
+    assert!(
+        f.writes.contains(&"p.x".to_string()),
+        "should write p.x, got {:?}",
+        f.writes
+    );
+}
+
+#[test]
+fn param_method_call_not_read() {
+    let units = extract(
+        r#"
+pub fn run_it(s: String) {
+    s.len();
+}
+"#,
+    );
+
+    let f = &units["test_crate::run_it"];
+    // s.len() is a method call, not a field read
+    assert!(
+        !f.reads.iter().any(|r| r.starts_with("s.")),
+        "param.method() should not be a field read, got {:?}",
+        f.reads
+    );
+}
+
+#[test]
+fn method_with_param_field_access() {
+    let units = extract(
+        r#"
+pub struct Point { pub x: f64, pub y: f64 }
+
+impl Point {
+    pub fn add(&mut self, other: &Point) {
+        self.x += other.x;
+        self.y += other.y;
+    }
+}
+"#,
+    );
+
+    let f = &units["test_crate::Point::add"];
+    // self fields (bare names)
+    assert!(f.writes.contains(&"x".to_string()), "should write x");
+    assert!(f.writes.contains(&"y".to_string()), "should write y");
+    // param fields (prefixed)
+    assert!(
+        f.reads.contains(&"other.x".to_string()),
+        "should read other.x, got {:?}",
+        f.reads
+    );
+    assert!(
+        f.reads.contains(&"other.y".to_string()),
+        "should read other.y, got {:?}",
+        f.reads
+    );
+}
+
 #[test]
 fn closure_branches_counted() {
     let units = extract(

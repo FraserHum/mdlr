@@ -74,6 +74,7 @@ impl<'a> UnitExtractor<'a> {
         body: Option<&BlockStmt>,
         expr_body: Option<&Expr>,
         parent: Option<String>,
+        param_names: &[String],
     ) -> Unit {
         let id = self.make_id(name);
         let unit_span = self.make_span(span);
@@ -88,7 +89,7 @@ impl<'a> UnitExtractor<'a> {
         ) = if let Some(block) = body {
             let call_targets = calls::extract_calls_block(block);
             let (reads, writes) =
-                field_access::extract_field_access_block(block);
+                field_access::extract_field_access_block(block, param_names);
             let branch_count = branches::count_branches_block(block);
             let max_scope = scopes::max_scope_lines_block(block, self.sm);
             let cog = cognitive::compute_cognitive_block(block);
@@ -96,7 +97,7 @@ impl<'a> UnitExtractor<'a> {
         } else if let Some(expr) = expr_body {
             let call_targets = calls::extract_calls_expr(expr);
             let (reads, writes) =
-                field_access::extract_field_access_expr(expr);
+                field_access::extract_field_access_expr(expr, param_names);
             let branch_count = branches::count_branches_expr(expr);
             let cog = cognitive::compute_cognitive_expr(expr);
             // Arrow with expression body has no block scopes
@@ -142,6 +143,7 @@ impl<'a> UnitExtractor<'a> {
         match init {
             Expr::Arrow(arrow) => {
                 let params = arrow.params.len();
+                let param_names = extract_pat_names(&arrow.params);
                 let (body_block, body_expr) = match &*arrow.body {
                     BlockStmtOrExpr::BlockStmt(block) => (Some(block), None),
                     BlockStmtOrExpr::Expr(expr) => (None, Some(expr.as_ref())),
@@ -154,12 +156,15 @@ impl<'a> UnitExtractor<'a> {
                     body_block,
                     body_expr,
                     None,
+                    &param_names,
                 );
                 self.units.push(unit);
                 true
             }
             Expr::Fn(fn_expr) => {
                 let params = Self::count_params(&fn_expr.function.params);
+                let param_names =
+                    extract_param_names(&fn_expr.function.params);
                 let unit = self.extract_fn_unit(
                     name,
                     UnitKind::Function,
@@ -168,6 +173,7 @@ impl<'a> UnitExtractor<'a> {
                     fn_expr.function.body.as_ref(),
                     None,
                     None,
+                    &param_names,
                 );
                 self.units.push(unit);
                 true
@@ -202,6 +208,8 @@ impl<'a> UnitExtractor<'a> {
                         };
                         let params =
                             Self::count_params(&method.function.params);
+                        let param_names =
+                            extract_param_names(&method.function.params);
                         let parent = self.parent_id();
                         let unit = self.extract_fn_unit(
                             &name,
@@ -211,6 +219,7 @@ impl<'a> UnitExtractor<'a> {
                             method.function.body.as_ref(),
                             None,
                             parent,
+                            &param_names,
                         );
                         self.units.push(unit);
                     }
@@ -221,6 +230,17 @@ impl<'a> UnitExtractor<'a> {
                         .iter()
                         .filter(|p| matches!(p, ParamOrTsParamProp::Param(_)))
                         .count();
+                    let ctor_params: Vec<Param> = ctor
+                        .params
+                        .iter()
+                        .filter_map(|p| match p {
+                            ParamOrTsParamProp::Param(param) => {
+                                Some(param.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    let param_names = extract_param_names(&ctor_params);
                     let parent = self.parent_id();
                     let unit = self.extract_fn_unit(
                         "constructor",
@@ -230,12 +250,15 @@ impl<'a> UnitExtractor<'a> {
                         ctor.body.as_ref(),
                         None,
                         parent,
+                        &param_names,
                     );
                     self.units.push(unit);
                 }
                 ClassMember::PrivateMethod(method) => {
                     let name = method.key.name.to_string();
                     let params = Self::count_params(&method.function.params);
+                    let param_names =
+                        extract_param_names(&method.function.params);
                     let parent = self.parent_id();
                     let unit = self.extract_fn_unit(
                         &name,
@@ -245,6 +268,7 @@ impl<'a> UnitExtractor<'a> {
                         method.function.body.as_ref(),
                         None,
                         parent,
+                        &param_names,
                     );
                     self.units.push(unit);
                 }
@@ -258,6 +282,7 @@ impl Visit for UnitExtractor<'_> {
     fn visit_fn_decl(&mut self, n: &FnDecl) {
         let name = n.ident.sym.to_string();
         let params = Self::count_params(&n.function.params);
+        let param_names = extract_param_names(&n.function.params);
         let unit = self.extract_fn_unit(
             &name,
             UnitKind::Function,
@@ -266,6 +291,7 @@ impl Visit for UnitExtractor<'_> {
             n.function.body.as_ref(),
             None,
             None,
+            &param_names,
         );
         self.units.push(unit);
         // Do NOT recurse into the function body for nested declarations —
@@ -329,6 +355,8 @@ impl Visit for UnitExtractor<'_> {
                     .map(|id| id.sym.to_string())
                     .unwrap_or_else(|| "default".to_string());
                 let params = Self::count_params(&fn_expr.function.params);
+                let param_names =
+                    extract_param_names(&fn_expr.function.params);
                 let unit = self.extract_fn_unit(
                     &name,
                     UnitKind::Function,
@@ -337,6 +365,7 @@ impl Visit for UnitExtractor<'_> {
                     fn_expr.function.body.as_ref(),
                     None,
                     None,
+                    &param_names,
                 );
                 self.units.push(unit);
                 self.scope_stack.push(name);
@@ -382,6 +411,7 @@ impl Visit for UnitExtractor<'_> {
         match &*n.expr {
             Expr::Arrow(arrow) => {
                 let params = arrow.params.len();
+                let param_names = extract_pat_names(&arrow.params);
                 let (body_block, body_expr) = match &*arrow.body {
                     BlockStmtOrExpr::BlockStmt(block) => (Some(block), None),
                     BlockStmtOrExpr::Expr(expr) => (None, Some(expr.as_ref())),
@@ -394,6 +424,7 @@ impl Visit for UnitExtractor<'_> {
                     body_block,
                     body_expr,
                     None,
+                    &param_names,
                 );
                 self.units.push(unit);
             }
@@ -404,6 +435,8 @@ impl Visit for UnitExtractor<'_> {
                     .map(|id| id.sym.to_string())
                     .unwrap_or_else(|| "default".to_string());
                 let params = Self::count_params(&fn_expr.function.params);
+                let param_names =
+                    extract_param_names(&fn_expr.function.params);
                 let unit = self.extract_fn_unit(
                     &name,
                     UnitKind::Function,
@@ -412,6 +445,7 @@ impl Visit for UnitExtractor<'_> {
                     fn_expr.function.body.as_ref(),
                     None,
                     None,
+                    &param_names,
                 );
                 self.units.push(unit);
             }
@@ -433,6 +467,31 @@ impl Visit for UnitExtractor<'_> {
         // Intentionally empty — function expressions are handled by
         // visit_var_declarator and visit_export_default_expr.
     }
+}
+
+/// Extract parameter names from function params (excluding `this`).
+fn extract_param_names(params: &[Param]) -> Vec<String> {
+    params
+        .iter()
+        .filter_map(|p| match &p.pat {
+            Pat::Ident(ident) if ident.sym != "this" => {
+                Some(ident.sym.to_string())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Extract parameter names from arrow function patterns (excluding `this`).
+fn extract_pat_names(pats: &[Pat]) -> Vec<String> {
+    pats.iter()
+        .filter_map(|p| match p {
+            Pat::Ident(ident) if ident.sym != "this" => {
+                Some(ident.sym.to_string())
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Extract a string name from a property key.

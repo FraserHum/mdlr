@@ -3,7 +3,7 @@ use ra_ap_hir::{
     Adt, Crate, Function, HasSource, Impl, Module, ModuleDef, Semantics,
 };
 use ra_ap_ide_db::RootDatabase;
-use ra_ap_syntax::ast::{self, HasAttrs};
+use ra_ap_syntax::ast::{self, HasAttrs, HasName};
 use ra_ap_syntax::{AstNode, TextRange};
 use ra_ap_vfs::Vfs;
 use std::collections::HashMap;
@@ -186,7 +186,9 @@ fn extract_function(
     let (call_targets, calls_partial) =
         extract_calls_via_sema(sema, db, editioned_file_id, fn_range);
 
-    let (reads, writes) = field_access::extract_field_access(&body);
+    let param_names = extract_param_names(&ast_fn);
+    let (reads, writes) =
+        field_access::extract_field_access(&body, &param_names);
 
     let unit = Unit {
         id,
@@ -378,6 +380,24 @@ fn get_file_text(vfs: &Vfs, file_id: ra_ap_vfs::FileId) -> String {
     } else {
         String::new()
     }
+}
+
+/// Extract parameter names from a function signature (excluding `self`).
+fn extract_param_names(func: &ast::Fn) -> Vec<String> {
+    let param_list = match func.param_list() {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    param_list
+        .params()
+        .filter_map(|p| {
+            if let Some(ast::Pat::IdentPat(ident)) = p.pat() {
+                ident.name().map(|n| n.text().to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Count parameters for a function, excluding self for methods.
