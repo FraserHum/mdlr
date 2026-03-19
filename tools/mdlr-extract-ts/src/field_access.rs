@@ -216,9 +216,4 @@ impl Visit for FieldAccessVisitor {
         }
         n.visit_children_with(self);
     }
-
-    // Do NOT descend into nested functions/arrows
-    fn visit_arrow_expr(&mut self, _n: &ArrowExpr) {}
-    fn visit_fn_expr(&mut self, _n: &FnExpr) {}
-    fn visit_fn_decl(&mut self, _n: &FnDecl) {}
 }
