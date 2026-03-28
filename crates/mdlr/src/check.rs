@@ -8,7 +8,9 @@ use std::process;
 use crate::cache::CacheStore;
 use crate::cli::OutputFormat;
 use crate::config;
-use crate::extraction::{extract_rust, extract_ts, load_entries_from_dir};
+use crate::extraction::{
+    extract_go, extract_rust, extract_ts, load_entries_from_dir,
+};
 use crate::find_project_root;
 use crate::json_output::{
     build_bucketed_json, build_complexity_json, build_fan_metrics_json,
@@ -446,6 +448,9 @@ fn extract_and_analyze(
     extract_rust(&ctx.store, ctx.generation_id)?;
     if let Err(e) = extract_ts(&ctx.store, ctx.generation_id) {
         eprintln!("Warning: TS extraction failed: {e:#}");
+    }
+    if let Err(e) = extract_go(&ctx.store, ctx.generation_id) {
+        eprintln!("Warning: Go extraction failed: {e:#}");
     }
 
     let (entries, units) =

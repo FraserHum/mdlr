@@ -17,6 +17,11 @@ tasks:
     cmds:
       - cargo build {{if eq .MODE "release"}}--release{{end}} {{if eq .QUIET "true"}}2>/dev/null{{end}}
 
+  build-go:
+    dir: tools/mdlr-extract-go
+    cmds:
+      - go build -o ../../bin/mdlr-extract-go .
+
   link:
     vars:
       QUIET: '{{.QUIET | default "false"}}'
@@ -24,6 +29,7 @@ tasks:
       - task: build
         vars:
           QUIET: "{{.QUIET}}"
+      - task: build-go
     dir: bin
     cmds:
       - ln -sf ../target/debug/mdlr .
@@ -43,3 +49,4 @@ tasks:
       - cargo install --path crates/mdlr --root $HOME/.local
       - cargo install --path tools/mdlr-extract-rust --root $HOME/.local
       - cargo install --path tools/mdlr-extract-ts --root $HOME/.local
+      - cd tools/mdlr-extract-go && go build -o $HOME/.local/bin/mdlr-extract-go .
