@@ -211,6 +211,74 @@ pub fn extract_go(store: &CacheStore, generation_id: u64) -> Result<()> {
     Ok(())
 }
 
+/// Find the `mdlr-extract-py` binary, checking next to our own binary first.
+fn find_extract_py_binary() -> Option<PathBuf> {
+    if let Ok(current_exe) = env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            let sibling = dir.join("mdlr-extract-py");
+            if sibling.exists() {
+                return Some(sibling);
+            }
+        }
+    }
+    if let Ok(output) =
+        std::process::Command::new("which").arg("mdlr-extract-py").output()
+    {
+        if output.status.success() {
+            let path =
+                String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+    }
+    None
+}
+
+/// Detect whether the project has Python project files.
+fn has_python_project(root: &Path) -> bool {
+    root.join("pyproject.toml").exists()
+        || root.join("setup.py").exists()
+        || root.join("setup.cfg").exists()
+}
+
+/// Shell out to `mdlr-extract-py` to extract units from Python files.
+///
+/// Only runs if a Python project marker exists at the workspace root.
+#[tracing::instrument(name = "extract_py", skip_all)]
+pub fn extract_py(store: &CacheStore, generation_id: u64) -> Result<()> {
+    let extract_bin = match find_extract_py_binary() {
+        Some(bin) => bin,
+        None => return Ok(()), // silently skip if not available
+    };
+
+    let workspace_root = store.root();
+    if !has_python_project(workspace_root) {
+        return Ok(());
+    }
+
+    let status = std::process::Command::new(&extract_bin)
+        .arg("--root")
+        .arg(workspace_root)
+        .arg("--output")
+        .arg(store.cache_dir())
+        .arg("--generation-id")
+        .arg(generation_id.to_string())
+        .current_dir(workspace_root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("Failed to run mdlr-extract-py")?;
+
+    if !status.success() {
+        eprintln!(
+            "Warning: Python extraction had errors (results may be partial)"
+        );
+    }
+
+    Ok(())
+}
+
 /// Recursively load FileCacheEntry JSON files from a directory.
 #[tracing::instrument(name = "load_cache", skip_all)]
 pub fn load_entries_from_dir(

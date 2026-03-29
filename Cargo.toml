@@ -6,6 +6,7 @@ members = [
     "crates/mdlr",
     "tools/mdlr-extract-rust",
     "tools/mdlr-extract-ts",
+    "tools/mdlr-extract-py",
 ]
 exclude = [
     "test-repos",

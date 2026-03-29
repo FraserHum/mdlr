@@ -9,7 +9,7 @@ use crate::cache::CacheStore;
 use crate::cli::OutputFormat;
 use crate::config;
 use crate::extraction::{
-    extract_go, extract_rust, extract_ts, load_entries_from_dir,
+    extract_go, extract_py, extract_rust, extract_ts, load_entries_from_dir,
 };
 use crate::find_project_root;
 use crate::json_output::{
@@ -451,6 +451,9 @@ fn extract_and_analyze(
     }
     if let Err(e) = extract_go(&ctx.store, ctx.generation_id) {
         eprintln!("Warning: Go extraction failed: {e:#}");
+    }
+    if let Err(e) = extract_py(&ctx.store, ctx.generation_id) {
+        eprintln!("Warning: Python extraction failed: {e:#}");
     }
 
     let (entries, units) =

@@ -10,6 +10,7 @@ mdlr supports multiple languages through dedicated extractor binaries that outpu
 | TypeScript | `.ts`, `.tsx` | Full support |
 | JavaScript | `.js`, `.jsx` | Full support |
 | Go | `.go` | Full support |
+| Python | `.py`, `.pyi` | Full support |
 
 ### Rust Extraction
 
@@ -75,11 +76,27 @@ Scope: Analyzes the module rooted at `go.mod` (equivalent to `./...`).
 
 Build with: `task build-go` or `go build -o mdlr-extract-go ./tools/mdlr-extract-go`
 
-## Planned
+### Python Extraction
 
-| Language | Extensions | Status |
-|----------|------------|--------|
-| Python | `.py` | Planned |
+The Python extractor (`mdlr-extract-py`) uses [ruff](https://github.com/astral-sh/ruff)'s Python parser (`ruff_python_parser`) for AST-level analysis and identifies:
+
+- **Functions**: `def` declarations at module level and nested
+- **Classes**: `class` declarations (mapped to `Struct`)
+- **Methods**: `def` inside a class body
+- **Calls**: Function calls (name-based best-effort): `foo()` → `foo`, `self.bar()` → `Self.bar`, `mod.func()` → `mod.func`
+- **Field access**: `self.field` reads and `self.field = ...` writes (instance methods only)
+- **Branches**: `if`, `elif`, `for`, `while`, `try/except`, `match/case`, `and`/`or`, ternary `x if cond else y`
+- **Scopes**: Largest nested scope block
+
+Unit ID format: `<module_path>::<ClassName>.<method_name>` (e.g., `src.mymod.core::Foo.bar`). Module path is derived from the file path with slashes replaced by dots and `.py` stripped.
+
+Project detection: Looks for `pyproject.toml`, `setup.py`, or `setup.cfg` at the workspace root.
+
+File filtering: Respects `.gitignore` and excludes `__pycache__`, `.venv`, `venv`, `.tox`, `build`, `dist`, `.eggs`, `node_modules`.
+
+Not extracted: decorators (v1), type-resolved calls, lambda/comprehension as separate units.
+
+Build with: `cargo install --path tools/mdlr-extract-py`
 
 ## Adding Language Support
 
