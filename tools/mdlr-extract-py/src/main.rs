@@ -1,8 +1,18 @@
 mod branches;
+#[cfg(test)]
+mod branches_test;
 mod calls;
+#[cfg(test)]
+mod calls_test;
 mod cognitive;
+#[cfg(test)]
+mod cognitive_test;
 mod field_access;
+#[cfg(test)]
+mod field_access_test;
 mod scopes;
+#[cfg(test)]
+mod scopes_test;
 mod visitor;
 
 use anyhow::{Context, Result};

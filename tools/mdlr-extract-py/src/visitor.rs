@@ -37,6 +37,11 @@ pub(crate) struct LineIndex {
 }
 
 impl LineIndex {
+    #[cfg(test)]
+    pub(crate) fn new_from_source(source: &str) -> Self {
+        Self::new(source)
+    }
+
     fn new(source: &str) -> Self {
         let mut line_starts = vec![0];
         for (i, b) in source.bytes().enumerate() {
