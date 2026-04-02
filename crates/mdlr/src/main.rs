@@ -53,7 +53,7 @@ fn main() -> Result<()> {
     let root = cli.root.as_deref();
 
     match cli.command {
-        Command::Check { target, k, pretty, format, timing, all } => {
+        Command::Check { target, k, pretty, format, timing, all, filter } => {
             check::handle_check(
                 target.as_deref(),
                 k,
@@ -61,6 +61,7 @@ fn main() -> Result<()> {
                 format,
                 timing,
                 all,
+                filter.as_deref(),
                 root,
             )
         }

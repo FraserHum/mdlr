@@ -17,6 +17,10 @@ mdlr check -A
 mdlr check src/metrics
 mdlr check src/main.rs
 
+# Scope to a folder (combines with diff/all mode)
+mdlr check -f src/metrics
+mdlr check -A -f src/metrics
+
 # Analyze a specific symbol by fully qualified crate name
 mdlr check "mdlr::handle_check"
 mdlr check "mdlr::cache::store::CacheStore"

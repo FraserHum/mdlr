@@ -35,6 +35,9 @@ pub enum Command {
         /// Analyze all files even when on a branch (default: diff mode on branches, all on main/master)
         #[arg(short = 'A', long)]
         all: bool,
+        /// Scope analysis to a specific directory (combines with diff/all mode)
+        #[arg(short = 'f', long)]
+        filter: Option<String>,
     },
     /// List supported metrics with descriptions
     Metrics {

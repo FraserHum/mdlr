@@ -14,7 +14,7 @@
 Run analysis and display metrics.
 
 ```bash
-mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A]
+mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A] [-f <dir>]
 ```
 
 | Option | Default | Description |
@@ -24,8 +24,9 @@ mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A]
 | `--pretty` | false | Pretty print as aligned table |
 | `--format` | `text` | Output format: `text` or `json` |
 | `-A, --all` | false | Analyze all files even when on a branch |
+| `-f, --filter` | - | Scope analysis to a specific directory (combines with diff/all mode) |
 
-By default, `check` uses **diff mode** on branches (only analyzing files changed since main/master) and analyzes all files when on main/master. Use `-A` to force analyzing all files when on a branch.
+By default, `check` uses **diff mode** on branches (only analyzing files changed since main/master) and analyzes all files when on main/master. Use `-A` to force analyzing all files when on a branch. Use `-f` to scope metrics to a specific directory — this works in both diff and all modes.
 
 Running `check` extracts all files and writes results to the cache.
 
@@ -52,6 +53,12 @@ mdlr check "src/cache/store.rs::impl CacheStore::load_entry"
 
 # Analyze an impl block
 mdlr check "src/cache/store.rs::impl CacheStore"
+
+# Scope to a directory (all mode)
+mdlr check -A -f src/metrics
+
+# Scope to a directory (diff mode on branches)
+mdlr check -f src/metrics
 
 # Show all opportunities (not just top 3)
 mdlr check -k -1

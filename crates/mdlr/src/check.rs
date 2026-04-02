@@ -97,9 +97,14 @@ fn parse_check_filter(target: Option<&str>, cwd: &Path) -> CheckFilter {
     }
 }
 
-/// Check if a file path passes the filter
-fn passes_path_filter(file_path: &Path, filter: &CheckFilter) -> bool {
-    match filter {
+/// Check if a file path passes the filter.
+/// When `folder` is set, also requires the file to be inside that directory.
+fn passes_path_filter(
+    file_path: &Path,
+    filter: &CheckFilter,
+    folder: Option<&Path>,
+) -> bool {
+    let passes_mode = match filter {
         CheckFilter::File(filter_path) => file_path == *filter_path,
         CheckFilter::Directory(filter_path) => {
             file_path.starts_with(filter_path)
@@ -108,6 +113,14 @@ fn passes_path_filter(file_path: &Path, filter: &CheckFilter) -> bool {
             file_path.canonicalize().map_or(false, |p| changed.contains(&p))
         }
         CheckFilter::Symbol(_) | CheckFilter::None => true,
+    };
+    if !passes_mode {
+        return false;
+    }
+    if let Some(folder) = folder {
+        file_path.canonicalize().map_or(false, |p| p.starts_with(folder))
+    } else {
+        true
     }
 }
 
@@ -419,6 +432,7 @@ fn setup_timing(enabled: bool) -> Option<timing::TimingPrinter> {
 fn load_filtered_units(
     store: &CacheStore,
     filter: &CheckFilter,
+    folder: Option<&Path>,
     generation_id: u64,
 ) -> Result<(Vec<crate::cache::FileCacheEntry>, Vec<Unit>)> {
     let mut all_entries = Vec::new();
@@ -431,7 +445,7 @@ fn load_filtered_units(
             continue; // stale entry from a previous extraction
         }
         let file_path = store.root().join(&entry.source_path);
-        if passes_path_filter(&file_path, filter) {
+        if passes_path_filter(&file_path, filter, folder) {
             units.extend(entry.units.clone());
         }
         entries.push(entry);
@@ -444,6 +458,7 @@ fn load_filtered_units(
 fn extract_and_analyze(
     ctx: &CheckContext,
     filter: &CheckFilter,
+    folder: Option<&Path>,
 ) -> Result<(ComputedMetrics, usize)> {
     extract_rust(&ctx.store, ctx.generation_id)?;
     if let Err(e) = extract_ts(&ctx.store, ctx.generation_id) {
@@ -457,7 +472,7 @@ fn extract_and_analyze(
     }
 
     let (entries, units) =
-        load_filtered_units(&ctx.store, filter, ctx.generation_id)?;
+        load_filtered_units(&ctx.store, filter, folder, ctx.generation_id)?;
 
     if let CheckFilter::Symbol(symbol_id) = filter {
         if !units.iter().any(|u| u.id == *symbol_id) {
@@ -480,10 +495,30 @@ pub fn handle_check(
     format: OutputFormat,
     timing: bool,
     all: bool,
+    filter_dir: Option<&str>,
     explicit_root: Option<&Path>,
 ) -> Result<()> {
     let printer = setup_timing(timing);
     let ctx = CheckContext::new(explicit_root)?;
+
+    // Resolve --filter directory to a canonical path
+    let folder = if let Some(dir) = filter_dir {
+        let p = if Path::new(dir).is_absolute() {
+            PathBuf::from(dir)
+        } else {
+            ctx.cwd.join(dir)
+        };
+        let canonical = p.canonicalize().map_err(|_| {
+            anyhow::anyhow!("filter directory '{}' does not exist", dir)
+        })?;
+        if !canonical.is_dir() {
+            bail!("filter path '{}' is not a directory", dir);
+        }
+        Some(canonical)
+    } else {
+        None
+    };
+
     let filter = if target.is_some() || all {
         // Explicit target or --all flag: skip diff mode
         parse_check_filter(target, &ctx.cwd)
@@ -496,7 +531,8 @@ pub fn handle_check(
         CheckFilter::Diff(changed)
     };
 
-    let (computed, entry_count) = extract_and_analyze(&ctx, &filter)?;
+    let (computed, entry_count) =
+        extract_and_analyze(&ctx, &filter, folder.as_deref())?;
 
     let result = match format {
         OutputFormat::Text => format_text_output(
