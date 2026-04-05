@@ -10,6 +10,7 @@ use crate::cli::OutputFormat;
 use crate::config;
 use crate::extraction::{
     extract_go, extract_py, extract_rust, extract_ts, load_entries_from_dir,
+    load_tokens_from_dir,
 };
 use crate::find_project_root;
 use crate::json_output::{
@@ -46,6 +47,7 @@ struct ComputedMetrics {
     complexity: ComplexityMetrics,
     struct_metrics: StructMetrics,
     file_loc: FileLocMetrics,
+    duplication: mdlr_cpd::DuplicationMetrics,
 }
 
 /// Context for the check command, bundling common resources
@@ -231,6 +233,8 @@ fn git_diff_name_only(root: &Path, args: &[&str]) -> Result<Vec<String>> {
 #[tracing::instrument(name = "compute_metrics", skip_all)]
 fn compute_all_metrics(
     units: Vec<Unit>,
+    all_tokens: &[mdlr_cpd::FileTokens],
+    scope_files: Option<&HashSet<PathBuf>>,
     config: &config::Config,
 ) -> ComputedMetrics {
     let graph =
@@ -244,7 +248,19 @@ fn compute_all_metrics(
     let struct_metrics = StructMetrics::compute(&graph);
     let file_loc = FileLocMetrics::compute(&graph);
 
-    ComputedMetrics { graph, structural, complexity, struct_metrics, file_loc }
+    let duplication = tracing::info_span!("cpd").in_scope(|| {
+        let clones = mdlr_cpd::find_clones(all_tokens, config.cpd.min_tokens);
+        mdlr_cpd::compute_duplication(&clones, all_tokens, scope_files)
+    });
+
+    ComputedMetrics {
+        graph,
+        structural,
+        complexity,
+        struct_metrics,
+        file_loc,
+        duplication,
+    }
 }
 
 /// Extract symbol filter string from CheckFilter
@@ -269,6 +285,7 @@ fn format_text_output(
         complexity: &computed.complexity,
         struct_metrics: &computed.struct_metrics,
         file_loc: &computed.file_loc,
+        duplication: &computed.duplication,
     };
     let symbol_filter = get_symbol_filter(filter);
     let ignores = store.ignores().load_ignores().unwrap_or_default();
@@ -323,6 +340,16 @@ fn format_json_output(
     let partial_count =
         computed.graph.units.iter().filter(|u| u.partial).count();
 
+    let duplication_json = serde_json::json!({
+        "max": computed.duplication.max,
+        "mean": computed.duplication.mean,
+        "p90": computed.duplication.p90,
+        "clone_count": computed.duplication.clone_count,
+        "distribution": computed.duplication.distribution.iter()
+            .map(|(file, pct)| serde_json::json!({"file": file, "duplication_pct": pct}))
+            .collect::<Vec<_>>(),
+    });
+
     let output = serde_json::json!({
         "files": {
             "extracted": extracted_count,
@@ -337,6 +364,7 @@ fn format_json_output(
             "complexity": build_complexity_json(&computed.complexity),
             "struct": build_struct_json(&computed.struct_metrics),
             "file_loc": build_file_loc_json(&computed.file_loc),
+            "duplication": duplication_json,
         }
     });
     println!("{}", serde_json::to_string_pretty(&output)?);
@@ -405,6 +433,11 @@ fn build_symbol_json(
             &t.methods_per_struct,
         ),
         ("lcom", &computed.struct_metrics.lcom.distribution, &t.lcom),
+        (
+            "duplication_pct",
+            &computed.duplication.distribution,
+            &t.duplication_pct,
+        ),
     ];
 
     for (name, distribution, thresholds) in metric_sources {
@@ -446,17 +479,34 @@ fn setup_timing(enabled: bool) -> Option<timing::TimingPrinter> {
 
 /// Load cache entries and collect units matching the filter.
 /// Entries with `cached_at < generation_id` are stale and skipped.
+/// Also loads all token caches for CPD (which needs project-wide data).
 fn load_filtered_units(
     store: &CacheStore,
     filter: &CheckFilter,
     folder: Option<&Path>,
     generation_id: u64,
-) -> Result<(Vec<crate::cache::FileCacheEntry>, Vec<Unit>)> {
+) -> Result<(
+    Vec<crate::cache::FileCacheEntry>,
+    Vec<Unit>,
+    Vec<mdlr_cpd::FileTokens>,
+    Option<HashSet<PathBuf>>,
+)> {
     let mut all_entries = Vec::new();
     load_entries_from_dir(&store.cache_dir(), &mut all_entries)?;
 
+    let mut all_tokens = Vec::new();
+    load_tokens_from_dir(&store.cache_dir(), &mut all_tokens)?;
+
+    // Filter stale token caches
+    all_tokens.retain(|t| t.cached_at >= generation_id);
+
     let mut entries = Vec::new();
     let mut units = Vec::new();
+    let mut scope_files: Option<HashSet<PathBuf>> = match filter {
+        CheckFilter::None => None,
+        _ => Some(HashSet::new()),
+    };
+
     for entry in all_entries {
         if entry.cached_at < generation_id {
             continue; // stale entry from a previous extraction
@@ -464,11 +514,14 @@ fn load_filtered_units(
         let file_path = store.root().join(&entry.source_path);
         if passes_path_filter(&file_path, filter, folder) {
             units.extend(entry.units.clone());
+            if let Some(ref mut scope) = scope_files {
+                scope.insert(entry.source_path.clone());
+            }
         }
         entries.push(entry);
     }
 
-    Ok((entries, units))
+    Ok((entries, units, all_tokens, scope_files))
 }
 
 /// Extract, load, validate, and compute all metrics.
@@ -488,7 +541,7 @@ fn extract_and_analyze(
         eprintln!("Warning: Python extraction failed: {e:#}");
     }
 
-    let (entries, units) =
+    let (entries, units, all_tokens, scope_files) =
         load_filtered_units(&ctx.store, filter, folder, ctx.generation_id)?;
 
     if let CheckFilter::Symbol(symbol_id) = filter {
@@ -501,7 +554,12 @@ fn extract_and_analyze(
     }
 
     let entry_count = entries.len();
-    let computed = compute_all_metrics(units, &ctx.config);
+    let computed = compute_all_metrics(
+        units,
+        &all_tokens,
+        scope_files.as_ref(),
+        &ctx.config,
+    );
     Ok((computed, entry_count))
 }
 

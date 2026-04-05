@@ -86,19 +86,27 @@ fn find_extractor() -> PathBuf {
     );
 }
 
-fn find_json_files(dir: &Path) -> Vec<PathBuf> {
+fn find_files_by_ext(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut results = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                results.extend(find_json_files(&path));
-            } else if path.extension().is_some_and(|e| e == "json") {
+                results.extend(find_files_by_ext(&path, ext));
+            } else if path.extension().is_some_and(|e| e == ext) {
                 results.push(path);
             }
         }
     }
     results
+}
+
+fn find_json_files(dir: &Path) -> Vec<PathBuf> {
+    find_files_by_ext(dir, "json")
+}
+
+fn find_token_files(dir: &Path) -> Vec<PathBuf> {
+    find_files_by_ext(dir, "tokens")
 }
 
 // ---- Unit extraction tests ----
@@ -699,5 +707,220 @@ class Point {
         f.reads.contains(&"other.y".to_string()),
         "should read other.y, got {:?}",
         f.reads
+    );
+}
+
+// ---- CPD token extraction tests (real files on disk) ----
+
+/// Run the extractor and return the output directory path and token files.
+fn extract_with_tokens(source: &str) -> (PathBuf, Vec<PathBuf>) {
+    extract_files_with_tokens(&[("src/test.ts", source)])
+}
+
+/// Run the extractor on multiple files and return output dir + token files.
+fn extract_files_with_tokens(
+    files: &[(&str, &str)],
+) -> (PathBuf, Vec<PathBuf>) {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_path_buf();
+
+    for (rel_path, source) in files {
+        let file_path = root.join(rel_path);
+        std::fs::create_dir_all(file_path.parent().unwrap()).expect("mkdir");
+        std::fs::write(&file_path, source).expect("write source");
+    }
+
+    let extractor = find_extractor();
+    let output_dir = root.join("output");
+    std::fs::create_dir_all(&output_dir).expect("mkdir output");
+
+    let status = Command::new(&extractor)
+        .arg("--root")
+        .arg(&root)
+        .arg("--output")
+        .arg(&output_dir)
+        .arg("--generation-id")
+        .arg("1")
+        .status()
+        .expect("run extractor");
+
+    assert!(status.success(), "extractor exited with {status}");
+
+    let token_files = find_token_files(&output_dir);
+    std::mem::forget(tmp);
+    (output_dir, token_files)
+}
+
+#[test]
+fn tokens_file_produced_for_ts() {
+    let (output_dir, token_files) = extract_with_tokens(
+        r#"
+function greet(name: string): string {
+    return "hello " + name;
+}
+"#,
+    );
+
+    let json_files = find_json_files(&output_dir);
+    assert!(!json_files.is_empty(), "should produce JSON files");
+    assert!(!token_files.is_empty(), "should produce .tokens files");
+}
+
+#[test]
+fn tokens_file_deserializes_with_correct_normalization() {
+    let (_output_dir, token_files) = extract_with_tokens(
+        r#"
+function add(a: number, b: number): number {
+    return a + b;
+}
+"#,
+    );
+
+    assert!(!token_files.is_empty());
+    let data = std::fs::read(&token_files[0]).expect("read token file");
+    let file_tokens =
+        mdlr_cpd::binary::deserialize(&data).expect("deserialize tokens");
+
+    assert!(!file_tokens.tokens.is_empty());
+
+    let values: Vec<&str> =
+        file_tokens.tokens.iter().map(|t| t.value.as_str()).collect();
+    assert!(
+        values.contains(&"function"),
+        "should contain keyword 'function', got {:?}",
+        values
+    );
+    assert!(
+        values.contains(&"$ID"),
+        "should normalize identifiers to $ID, got {:?}",
+        values
+    );
+    assert!(
+        values.contains(&"return"),
+        "should contain keyword 'return', got {:?}",
+        values
+    );
+}
+
+#[test]
+fn tokens_detect_duplicate_ts_functions_across_files() {
+    let (_output_dir, token_files) = extract_files_with_tokens(&[
+        (
+            "src/a.ts",
+            r#"
+function processItems(items: number[]): number[] {
+    const result: number[] = [];
+    for (const item of items) {
+        if (item > 0) {
+            result.push(item * 2);
+        } else {
+            result.push(0);
+        }
+    }
+    return result;
+}
+"#,
+        ),
+        (
+            "src/b.ts",
+            r#"
+function transformEntries(entries: number[]): number[] {
+    const output: number[] = [];
+    for (const entry of entries) {
+        if (entry > 0) {
+            output.push(entry * 2);
+        } else {
+            output.push(0);
+        }
+    }
+    return output;
+}
+"#,
+        ),
+    ]);
+
+    assert!(
+        token_files.len() >= 2,
+        "should produce token files for both TS files, got {}",
+        token_files.len()
+    );
+
+    // Load all token files
+    let mut all_tokens: Vec<mdlr_cpd::FileTokens> = Vec::new();
+    for tf in &token_files {
+        let data = std::fs::read(tf).expect("read token file");
+        let ft = mdlr_cpd::binary::deserialize(&data).expect("deserialize");
+        all_tokens.push(ft);
+    }
+
+    // These two functions have identical structure after normalization.
+    // They should be detected as clones.
+    let clones = mdlr_cpd::find_clones(&all_tokens, 15);
+    assert!(
+        !clones.is_empty(),
+        "should detect duplicate functions across files"
+    );
+
+    // Verify metrics
+    let metrics = mdlr_cpd::compute_duplication(&clones, &all_tokens, None);
+    assert!(metrics.clone_count > 0);
+    assert!(metrics.max > 0.0);
+}
+
+#[test]
+fn tokens_comments_stripped_on_disk() {
+    let (_output_dir, token_files) = extract_with_tokens(
+        r#"
+// This is a comment that should be stripped
+/* Block comment also stripped */
+const x = 42;
+"#,
+    );
+
+    assert!(!token_files.is_empty());
+    let data = std::fs::read(&token_files[0]).expect("read");
+    let ft = mdlr_cpd::binary::deserialize(&data).expect("deserialize");
+
+    // No comment tokens should be present
+    for token in &ft.tokens {
+        assert!(
+            !token.value.starts_with("//"),
+            "line comment should be stripped: {:?}",
+            token.value
+        );
+        assert!(
+            !token.value.starts_with("/*"),
+            "block comment should be stripped: {:?}",
+            token.value
+        );
+    }
+}
+
+#[test]
+fn tokens_ignore_markers_on_disk() {
+    let (_output_dir, token_files) = extract_with_tokens(
+        r#"
+const before = 1;
+// mdlr:ignore-start
+const ignored = 2;
+const alsoIgnored = 3;
+// mdlr:ignore-end
+const after = 4;
+"#,
+    );
+
+    assert!(!token_files.is_empty());
+    let data = std::fs::read(&token_files[0]).expect("read");
+    let ft = mdlr_cpd::binary::deserialize(&data).expect("deserialize");
+
+    let values: Vec<&str> =
+        ft.tokens.iter().map(|t| t.value.as_str()).collect();
+
+    // "const" should appear exactly twice (before and after the ignored section)
+    let const_count = values.iter().filter(|v| **v == "const").count();
+    assert_eq!(
+        const_count, 2,
+        "should have 2 'const' tokens (ignoring middle section), got {:?}",
+        values
     );
 }

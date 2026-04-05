@@ -149,7 +149,7 @@ func run(root, outputDir string, timestamp uint64) error {
 	}
 	wg.Wait()
 
-	// Write per-file JSON output
+	// Write per-file JSON output and token cache
 	for relPath, units := range results {
 		entry := FileCacheEntry{
 			SourcePath: relPath,
@@ -173,6 +173,18 @@ func run(root, outputDir string, timestamp uint64) error {
 		}
 		if err := os.WriteFile(outFile, data, 0o644); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: write %s: %v\n", outFile, err)
+		}
+
+		// Write token cache for CPD
+		absFile := filepath.Join(root, relPath)
+		source, err := os.ReadFile(absFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: read %s for tokenization: %v\n", relPath, err)
+			continue
+		}
+		ft := tokenizeGo(source, relPath, timestamp)
+		if err := writeTokenFile(outputDir, relPath, ft); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: write tokens %s: %v\n", relPath, err)
 		}
 	}
 

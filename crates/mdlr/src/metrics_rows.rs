@@ -2,6 +2,7 @@
 
 use crate::cache::Ignores;
 use crate::config::{Bucket, Config, MetricThresholds};
+use mdlr_cpd::DuplicationMetrics;
 use mdlr_metrics::{
     ComplexityMetrics, FileLocMetrics, HubInfo, StructMetrics,
     StructuralMetrics,
@@ -43,6 +44,7 @@ pub struct MetricsBundle<'a> {
     pub complexity: &'a ComplexityMetrics,
     pub struct_metrics: &'a StructMetrics,
     pub file_loc: &'a FileLocMetrics,
+    pub duplication: &'a DuplicationMetrics,
 }
 
 /// Specification for collecting an integer metric
@@ -243,6 +245,12 @@ impl<'a> MetricSpecs<'a> {
                     thresholds: &t.file_loc,
                     min_value: 0,
                 },
+                IntMetricSpec {
+                    name: "duplication_pct",
+                    distribution: &m.duplication.distribution,
+                    thresholds: &t.duplication_pct,
+                    min_value: 0,
+                },
             ],
             fan_in_spec: HubFilteredFanInSpec {
                 distribution: &m.structural.fan_in.distribution,
@@ -297,6 +305,7 @@ const METRIC_ORDER: &[&str] = &[
     "max_scope",
     "methods_per_struct",
     "file_loc",
+    "duplication_pct",
     "lcom",
 ];
 

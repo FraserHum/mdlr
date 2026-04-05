@@ -54,6 +54,10 @@ fn get_metric_descriptions() -> Vec<(&'static str, &'static str)> {
             "file_loc",
             "Lines of code per file. High values indicate large files that may be hard to navigate and maintain.",
         ),
+        (
+            "duplication_pct",
+            "Percentage of lines in a file that are part of a duplicated code block (copy-paste detection). High values indicate copy-pasted code that should be refactored into shared abstractions.",
+        ),
     ]
 }
 

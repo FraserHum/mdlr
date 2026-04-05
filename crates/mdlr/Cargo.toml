@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 mdlr-core = { workspace = true }
+mdlr-cpd = { workspace = true }
 mdlr-metrics = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }

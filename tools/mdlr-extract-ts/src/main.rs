@@ -3,6 +3,7 @@ mod calls;
 mod cognitive;
 mod field_access;
 mod scopes;
+mod tokenizer;
 mod visitor;
 
 use anyhow::{Context, Result};
@@ -175,6 +176,18 @@ fn process_file(
     std::fs::write(&output_file, json).with_context(|| {
         format!("Failed to write {}", output_file.display())
     })?;
+
+    // Write token cache for CPD
+    if let Ok(source_text) = std::fs::read_to_string(file_path) {
+        let file_tokens =
+            tokenizer::tokenize_ts(&source_text, &rel_path, timestamp);
+        let token_bytes = mdlr_cpd::binary::serialize(&file_tokens);
+        let mut token_file = output_dir.join(&rel_path);
+        token_file.set_extension("tokens");
+        if let Err(e) = std::fs::write(&token_file, token_bytes) {
+            eprintln!("Failed to write tokens for {}: {e}", rel_path);
+        }
+    }
 
     Ok(())
 }

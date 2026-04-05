@@ -103,6 +103,8 @@ pub struct ThresholdsConfig {
     pub file_loc: MetricThresholds,
     #[serde(default = "default_max_scope")]
     pub max_scope: MetricThresholds,
+    #[serde(default = "default_duplication_pct")]
+    pub duplication_pct: MetricThresholds,
 }
 
 /// Default threshold values as constants
@@ -172,6 +174,9 @@ mod defaults {
         fair: 50.0,
         poor: 100.0,
     };
+
+    pub const DUPLICATION_PCT: MetricThresholds =
+        MetricThresholds { excellent: 3.0, good: 5.0, fair: 10.0, poor: 20.0 };
 }
 
 // Serde default functions (required for partial deserialization)
@@ -214,6 +219,9 @@ fn default_file_loc() -> MetricThresholds {
 fn default_max_scope() -> MetricThresholds {
     defaults::MAX_SCOPE
 }
+fn default_duplication_pct() -> MetricThresholds {
+    defaults::DUPLICATION_PCT
+}
 
 impl Default for ThresholdsConfig {
     fn default() -> Self {
@@ -231,6 +239,7 @@ impl Default for ThresholdsConfig {
             lcom: defaults::LCOM,
             file_loc: defaults::FILE_LOC,
             max_scope: defaults::MAX_SCOPE,
+            duplication_pct: defaults::DUPLICATION_PCT,
         }
     }
 }
@@ -250,6 +259,7 @@ impl ThresholdsConfig {
             "lcom" => Some(&self.lcom),
             "file_loc" => Some(&self.file_loc),
             "max_scope" => Some(&self.max_scope),
+            "duplication_pct" => Some(&self.duplication_pct),
             _ => None,
         }
     }
@@ -273,6 +283,19 @@ impl Default for HubThresholds {
     }
 }
 
+/// CPD (Copy-Paste Detection) configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpdConfig {
+    /// Minimum number of tokens for a block to be considered a duplicate (default: 50)
+    pub min_tokens: usize,
+}
+
+impl Default for CpdConfig {
+    fn default() -> Self {
+        Self { min_tokens: 50 }
+    }
+}
+
 /// Main configuration struct
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -282,6 +305,8 @@ pub struct Config {
     pub display: DisplayConfig,
     #[serde(default)]
     pub hub: HubThresholds,
+    #[serde(default)]
+    pub cpd: CpdConfig,
 }
 
 #[cfg(test)]

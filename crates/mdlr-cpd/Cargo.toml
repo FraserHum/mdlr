@@ -1,0 +1,11 @@
+[package]
+name = "mdlr-cpd"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

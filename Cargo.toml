@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/mdlr-core",
+    "crates/mdlr-cpd",
     "crates/mdlr-metrics",
     "crates/mdlr",
     "tools/mdlr-extract-rust",
@@ -19,6 +20,7 @@ edition = "2024"
 [workspace.dependencies]
 # Internal crates
 mdlr-core = { path = "crates/mdlr-core" }
+mdlr-cpd = { path = "crates/mdlr-cpd" }
 mdlr-metrics = { path = "crates/mdlr-metrics" }
 
 # External dependencies

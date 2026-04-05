@@ -4,6 +4,7 @@ mod cognitive;
 mod field_access;
 mod path_util;
 mod scopes;
+mod tokenizer;
 mod visitor;
 mod walk;
 
@@ -164,6 +165,22 @@ fn run() -> Result<()> {
                     "Failed to serialize output for {}: {}",
                     source_path, e
                 );
+            }
+        }
+
+        // Write token cache for CPD
+        let abs_source_path = workspace_dir.join(&source_path);
+        if let Ok(source_text) = std::fs::read_to_string(&abs_source_path) {
+            let file_tokens = tokenizer::tokenize_rust(
+                &source_text,
+                &source_path,
+                timestamp,
+            );
+            let token_bytes = mdlr_cpd::binary::serialize(&file_tokens);
+            let mut token_file = output_dir.join(&source_path);
+            token_file.set_extension("tokens");
+            if let Err(e) = std::fs::write(&token_file, token_bytes) {
+                eprintln!("Failed to write tokens for {}: {}", source_path, e);
             }
         }
     }

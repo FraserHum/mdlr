@@ -322,3 +322,36 @@ pub fn load_entries_from_dir(
     }
     Ok(())
 }
+
+/// Recursively load .tokens binary files from a directory.
+#[tracing::instrument(name = "load_tokens", skip_all)]
+pub fn load_tokens_from_dir(
+    dir: &Path,
+    tokens: &mut Vec<mdlr_cpd::FileTokens>,
+) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for item in std::fs::read_dir(dir)? {
+        let item = item?;
+        let path = item.path();
+        if path.is_dir() {
+            load_tokens_from_dir(&path, tokens)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("tokens") {
+            let data = std::fs::read(&path).with_context(|| {
+                format!("Failed to read {}", path.display())
+            })?;
+            match mdlr_cpd::binary::deserialize(&data) {
+                Ok(file_tokens) => tokens.push(file_tokens),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to parse token cache {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}

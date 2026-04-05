@@ -102,19 +102,27 @@ fn find_extractor() -> PathBuf {
     );
 }
 
-fn find_json_files(dir: &Path) -> Vec<PathBuf> {
+fn find_files_by_ext(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut results = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                results.extend(find_json_files(&path));
-            } else if path.extension().is_some_and(|e| e == "json") {
+                results.extend(find_files_by_ext(&path, ext));
+            } else if path.extension().is_some_and(|e| e == ext) {
                 results.push(path);
             }
         }
     }
     results
+}
+
+fn find_json_files(dir: &Path) -> Vec<PathBuf> {
+    find_files_by_ext(dir, "json")
+}
+
+fn find_token_files(dir: &Path) -> Vec<PathBuf> {
+    find_files_by_ext(dir, "tokens")
 }
 
 // ---- Branch counting tests ----
@@ -621,5 +629,151 @@ pub fn with_closure(items: &[i32]) -> Vec<i32> {
         f.branches >= 1,
         "branches inside closures should be counted, got {}",
         f.branches
+    );
+}
+
+// ---- CPD token extraction tests (real files on disk) ----
+
+/// Run the extractor on real Rust source on disk and return token files produced.
+fn extract_with_tokens(lib_rs: &str) -> (PathBuf, Vec<PathBuf>) {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_path_buf();
+
+    std::fs::write(
+        root.join("Cargo.toml"),
+        r#"[package]
+name = "test_crate"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+"#,
+    )
+    .expect("write Cargo.toml");
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(root.join("src/lib.rs"), lib_rs).expect("write lib.rs");
+
+    let extractor = find_extractor();
+    let output_dir = root.join("output");
+    std::fs::create_dir_all(&output_dir).expect("mkdir output");
+
+    let status = Command::new(&extractor)
+        .current_dir(&root)
+        .arg("--manifest-path")
+        .arg(root.join("Cargo.toml"))
+        .arg("--output")
+        .arg(&output_dir)
+        .env("MDLR_QUIET_DIAGNOSTICS", "1")
+        .status()
+        .expect("run extractor");
+
+    assert!(status.success(), "extractor exited with {status}");
+
+    // Keep the tempdir alive by leaking it (tests are short-lived)
+    let token_files = find_token_files(&output_dir);
+    // Leak the tempdir so files survive for the caller
+    std::mem::forget(tmp);
+    (output_dir, token_files)
+}
+
+#[test]
+fn tokens_file_produced_alongside_json() {
+    let (output_dir, token_files) = extract_with_tokens(
+        r#"
+pub fn hello() -> &'static str {
+    "world"
+}
+"#,
+    );
+
+    let json_files = find_json_files(&output_dir);
+    assert!(!json_files.is_empty(), "should produce JSON cache files");
+    assert!(
+        !token_files.is_empty(),
+        "should produce .tokens files alongside JSON"
+    );
+}
+
+#[test]
+fn tokens_file_deserializes_correctly() {
+    let (_output_dir, token_files) = extract_with_tokens(
+        r#"
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"#,
+    );
+
+    assert!(!token_files.is_empty());
+    let data = std::fs::read(&token_files[0]).expect("read token file");
+    let file_tokens =
+        mdlr_cpd::binary::deserialize(&data).expect("deserialize tokens");
+
+    assert!(!file_tokens.tokens.is_empty(), "should have tokens");
+
+    // Verify normalization: identifiers become $ID, literals become $LIT
+    let values: Vec<&str> =
+        file_tokens.tokens.iter().map(|t| t.value.as_str()).collect();
+    assert!(
+        values.contains(&"$ID"),
+        "should contain normalized identifiers, got {:?}",
+        values
+    );
+    assert!(
+        values.contains(&"fn"),
+        "should contain keyword 'fn', got {:?}",
+        values
+    );
+}
+
+#[test]
+fn tokens_detect_duplicated_functions_on_disk() {
+    // Write two functions with identical structure to a real Rust file
+    let (_output_dir, token_files) = extract_with_tokens(
+        r#"
+pub fn process_alpha(items: &[i32]) -> Vec<i32> {
+    let mut result = Vec::new();
+    for item in items {
+        if *item > 0 {
+            result.push(*item * 2);
+        } else {
+            result.push(0);
+        }
+    }
+    result
+}
+
+pub fn process_beta(entries: &[i32]) -> Vec<i32> {
+    let mut result = Vec::new();
+    for entry in entries {
+        if *entry > 0 {
+            result.push(*entry * 2);
+        } else {
+            result.push(0);
+        }
+    }
+    result
+}
+"#,
+    );
+
+    assert!(!token_files.is_empty());
+    let data = std::fs::read(&token_files[0]).expect("read token file");
+    let file_tokens =
+        mdlr_cpd::binary::deserialize(&data).expect("deserialize tokens");
+
+    // Since both functions have the same structure after normalization,
+    // CPD should find a self-clone within this single file
+    let clones = mdlr_cpd::find_clones(&[file_tokens], 15);
+    assert!(
+        !clones.is_empty(),
+        "should detect duplicated function bodies within the same file"
+    );
+    // The clone should be within the same file (self-clone)
+    assert_eq!(
+        clones[0].file_a, clones[0].file_b,
+        "clone should be within same file"
     );
 }
