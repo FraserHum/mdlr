@@ -14,7 +14,7 @@ use ra_ap_hir::{attach_db, Crate, Semantics};
 use ra_ap_load_cargo::{
     load_workspace_at, LoadCargoConfig, ProcMacroServerChoice,
 };
-use ra_ap_project_model::{CargoConfig, RustLibSource};
+use ra_ap_project_model::CargoConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -74,13 +74,13 @@ fn run() -> Result<()> {
         .parent()
         .context("manifest path has no parent directory")?;
 
-    // Load the workspace using rust-analyzer's infrastructure
-    let cargo_config = CargoConfig {
-        sysroot: Some(RustLibSource::Discover),
-        ..CargoConfig::default()
-    };
+    // Load the workspace using rust-analyzer's infrastructure.
+    // Skip sysroot, build scripts, and dependency sources — we only need
+    // semantic resolution between workspace-local crates.
+    let cargo_config =
+        CargoConfig { sysroot: None, no_deps: true, ..CargoConfig::default() };
     let load_config = LoadCargoConfig {
-        load_out_dirs_from_check: true,
+        load_out_dirs_from_check: false,
         with_proc_macro_server: ProcMacroServerChoice::None,
         prefill_caches: false,
     };
