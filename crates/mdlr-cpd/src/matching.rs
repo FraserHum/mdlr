@@ -111,9 +111,12 @@ pub fn find_clones(files: &[FileTokens], min_tokens: usize) -> Vec<ClonePair> {
         let _ = file; // suppress unused warning
     }
 
-    // For each hash bucket, verify matches and extend them maximally
-    let mut clone_pairs: Vec<ClonePair> = Vec::new();
-    let mut seen: HashMap<(usize, usize), bool> = HashMap::new(); // (pos_a, pos_b) -> already reported
+    // For each hash bucket, verify matches and extend them maximally,
+    // collecting them per (file_a, file_b) pair so subsumption can be
+    // checked inline against the small per-pair list rather than after
+    // the fact across the global clone list.
+    let mut clones_by_pair: HashMap<(usize, usize), Vec<ClonePair>> =
+        HashMap::new();
 
     for (_hash, positions) in &hash_map {
         if positions.len() < 2 {
@@ -133,12 +136,6 @@ pub fn find_clones(files: &[FileTokens], min_tokens: usize) -> Vec<ClonePair> {
                     continue;
                 }
 
-                // Skip if we've already reported a clone that subsumes this pair
-                let key = (pos_a.min(pos_b), pos_a.max(pos_b));
-                if seen.contains_key(&key) {
-                    continue;
-                }
-
                 // Verify the tokens actually match (avoid hash collisions)
                 if !tokens_match(&flat, pos_a, pos_b, min_tokens) {
                     continue;
@@ -152,11 +149,10 @@ pub fn find_clones(files: &[FileTokens], min_tokens: usize) -> Vec<ClonePair> {
                         (pos_b, pos_a)
                     };
                     if lo + min_tokens > hi {
-                        continue; // overlapping within same file
+                        continue;
                     }
                 }
 
-                // Extend the match as far as possible
                 let match_len = extend_match(
                     &flat,
                     pos_a,
@@ -165,12 +161,9 @@ pub fn find_clones(files: &[FileTokens], min_tokens: usize) -> Vec<ClonePair> {
                     &file_boundaries,
                 );
 
-                seen.insert(key, true);
-
                 let file_a_idx = flat[pos_a].file_idx;
                 let file_b_idx = flat[pos_b].file_idx;
-
-                clone_pairs.push(ClonePair {
+                let candidate = ClonePair {
                     file_a: files[file_a_idx].source_path.clone(),
                     start_line_a: flat[pos_a].line,
                     end_line_a: flat[pos_a + match_len - 1].line,
@@ -178,15 +171,47 @@ pub fn find_clones(files: &[FileTokens], min_tokens: usize) -> Vec<ClonePair> {
                     start_line_b: flat[pos_b].line,
                     end_line_b: flat[pos_b + match_len - 1].line,
                     token_count: match_len,
-                });
+                };
+                insert_or_subsume(
+                    clones_by_pair
+                        .entry((file_a_idx, file_b_idx))
+                        .or_default(),
+                    candidate,
+                );
             }
         }
     }
 
-    // Deduplicate: remove clone pairs that are fully subsumed by larger ones
-    deduplicate_clones(&mut clone_pairs);
+    clones_by_pair.into_values().flatten().collect()
+}
 
-    clone_pairs
+/// Insert `candidate` into a per-(file_a, file_b) clone list, dropping it
+/// if subsumed by an existing clone and removing any existing clones it
+/// supersedes. Subsumption is judged on line ranges (matching the original
+/// `deduplicate_clones` semantics).
+fn insert_or_subsume(bucket: &mut Vec<ClonePair>, candidate: ClonePair) {
+    let mut i = 0;
+    while i < bucket.len() {
+        if line_subsumes(&bucket[i], &candidate) {
+            return;
+        }
+        if line_subsumes(&candidate, &bucket[i]) {
+            bucket.swap_remove(i);
+            continue;
+        }
+        i += 1;
+    }
+    bucket.push(candidate);
+}
+
+/// Returns true if `inner`'s line range on both sides is contained in
+/// `outer`'s on the corresponding side (caller guarantees same file_a,
+/// file_b ordering).
+fn line_subsumes(outer: &ClonePair, inner: &ClonePair) -> bool {
+    inner.start_line_a >= outer.start_line_a
+        && inner.end_line_a <= outer.end_line_a
+        && inner.start_line_b >= outer.start_line_b
+        && inner.end_line_b <= outer.end_line_b
 }
 
 /// Verify that tokens at two positions actually match for `len` tokens.
@@ -239,64 +264,6 @@ fn extend_match(
     }
 
     len
-}
-
-/// Remove clone pairs that are fully subsumed by a larger clone pair.
-fn deduplicate_clones(clones: &mut Vec<ClonePair>) {
-    if clones.len() <= 1 {
-        return;
-    }
-
-    // Sort by token_count descending so larger clones come first
-    clones.sort_by(|a, b| b.token_count.cmp(&a.token_count));
-
-    let mut keep = vec![true; clones.len()];
-
-    for i in 0..clones.len() {
-        if !keep[i] {
-            continue;
-        }
-        for j in (i + 1)..clones.len() {
-            if !keep[j] {
-                continue;
-            }
-            if is_subsumed(&clones[j], &clones[i]) {
-                keep[j] = false;
-            }
-        }
-    }
-
-    let mut idx = 0;
-    clones.retain(|_| {
-        let k = keep[idx];
-        idx += 1;
-        k
-    });
-}
-
-/// Check if `small` clone is fully contained within `large` clone.
-fn is_subsumed(small: &ClonePair, large: &ClonePair) -> bool {
-    // Check if small's A side is within large's A side and small's B side is within large's B side
-    let a_in_a = small.file_a == large.file_a
-        && small.start_line_a >= large.start_line_a
-        && small.end_line_a <= large.end_line_a;
-    let b_in_b = small.file_b == large.file_b
-        && small.start_line_b >= large.start_line_b
-        && small.end_line_b <= large.end_line_b;
-
-    if a_in_a && b_in_b {
-        return true;
-    }
-
-    // Check the flipped case (small's A in large's B and vice versa)
-    let a_in_b = small.file_a == large.file_b
-        && small.start_line_a >= large.start_line_b
-        && small.end_line_a <= large.end_line_b;
-    let b_in_a = small.file_b == large.file_a
-        && small.start_line_b >= large.start_line_a
-        && small.end_line_b <= large.end_line_a;
-
-    a_in_b && b_in_a
 }
 
 /// Modular exponentiation: base^exp mod modulus
@@ -528,30 +495,38 @@ mod tests {
     }
 
     #[test]
-    fn test_deduplication_removes_subsumed() {
-        let mut clones = vec![
-            ClonePair {
-                file_a: PathBuf::from("a.rs"),
-                start_line_a: 1,
-                end_line_a: 20,
-                file_b: PathBuf::from("b.rs"),
-                start_line_b: 1,
-                end_line_b: 20,
-                token_count: 60,
-            },
-            ClonePair {
-                file_a: PathBuf::from("a.rs"),
-                start_line_a: 5,
-                end_line_a: 15,
-                file_b: PathBuf::from("b.rs"),
-                start_line_b: 5,
-                end_line_b: 15,
-                token_count: 30,
-            },
-        ];
+    fn test_insert_or_subsume_drops_smaller() {
+        let big = ClonePair {
+            file_a: PathBuf::from("a.rs"),
+            start_line_a: 1,
+            end_line_a: 20,
+            file_b: PathBuf::from("b.rs"),
+            start_line_b: 1,
+            end_line_b: 20,
+            token_count: 60,
+        };
+        let small = ClonePair {
+            file_a: PathBuf::from("a.rs"),
+            start_line_a: 5,
+            end_line_a: 15,
+            file_b: PathBuf::from("b.rs"),
+            start_line_b: 5,
+            end_line_b: 15,
+            token_count: 30,
+        };
 
-        deduplicate_clones(&mut clones);
-        assert_eq!(clones.len(), 1, "smaller clone should be removed");
-        assert_eq!(clones[0].token_count, 60);
+        // Big inserted first; small should be dropped on insert.
+        let mut bucket = vec![];
+        insert_or_subsume(&mut bucket, big.clone());
+        insert_or_subsume(&mut bucket, small.clone());
+        assert_eq!(bucket.len(), 1);
+        assert_eq!(bucket[0].token_count, 60);
+
+        // Small inserted first; big should evict it.
+        let mut bucket = vec![];
+        insert_or_subsume(&mut bucket, small);
+        insert_or_subsume(&mut bucket, big);
+        assert_eq!(bucket.len(), 1);
+        assert_eq!(bucket[0].token_count, 60);
     }
 }
