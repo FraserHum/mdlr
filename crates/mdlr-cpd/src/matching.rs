@@ -125,6 +125,14 @@ pub fn find_clones(files: &[FileTokens], min_tokens: usize) -> Vec<ClonePair> {
                 let pos_a = positions[i];
                 let pos_b = positions[j];
 
+                // hasPreviousDupe: a longer match starting one earlier covers this pair.
+                if pos_a > file_boundaries[flat[pos_a].file_idx]
+                    && pos_b > file_boundaries[flat[pos_b].file_idx]
+                    && flat[pos_a - 1].value_id == flat[pos_b - 1].value_id
+                {
+                    continue;
+                }
+
                 // Skip if we've already reported a clone that subsumes this pair
                 let key = (pos_a.min(pos_b), pos_a.max(pos_b));
                 if seen.contains_key(&key) {
