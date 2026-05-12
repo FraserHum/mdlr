@@ -21,30 +21,35 @@ pub fn tokenize_py(
     source_path: &str,
     generation_id: u64,
 ) -> FileTokens {
-    let bytes = source.as_bytes();
-    let len = bytes.len();
-    let mut pos = 0;
+    let chars: Vec<(usize, char)> = source.char_indices().collect();
+    let n = chars.len();
+    let source_len = source.len();
+    let mut i = 0;
     let mut line: u32 = 1;
     let mut col: u16 = 0;
     let mut ignoring = false;
     let mut tokens = Vec::new();
 
-    while pos < len {
-        let b = bytes[pos];
+    let byte_at = |idx: usize| -> usize {
+        if idx < n { chars[idx].0 } else { source_len }
+    };
+
+    while i < n {
+        let c = chars[i].1;
 
         // Newline
-        if b == b'\n' {
-            pos += 1;
+        if c == '\n' {
+            i += 1;
             line += 1;
             col = 0;
             continue;
         }
 
         // Carriage return
-        if b == b'\r' {
-            pos += 1;
-            if pos < len && bytes[pos] == b'\n' {
-                pos += 1;
+        if c == '\r' {
+            i += 1;
+            if i < n && chars[i].1 == '\n' {
+                i += 1;
             }
             line += 1;
             col = 0;
@@ -52,27 +57,27 @@ pub fn tokenize_py(
         }
 
         // Whitespace
-        if b == b' ' || b == b'\t' {
-            pos += 1;
+        if c == ' ' || c == '\t' {
+            i += 1;
             col += 1;
             continue;
         }
 
         // Line continuation
-        if b == b'\\' && pos + 1 < len && bytes[pos + 1] == b'\n' {
-            pos += 2;
+        if c == '\\' && nth_char(&chars, i + 1) == Some('\n') {
+            i += 2;
             line += 1;
             col = 0;
             continue;
         }
 
         // Comment
-        if b == b'#' {
-            let start = pos;
-            while pos < len && bytes[pos] != b'\n' {
-                pos += 1;
+        if c == '#' {
+            let start = chars[i].0;
+            while i < n && chars[i].1 != '\n' {
+                i += 1;
             }
-            let comment = &source[start..pos];
+            let comment = &source[start..byte_at(i)];
             if comment.contains("mdlr:ignore-start") {
                 ignoring = true;
             } else if comment.contains("mdlr:ignore-end") {
@@ -83,7 +88,7 @@ pub fn tokenize_py(
 
         // Skip tokens in ignored regions
         if ignoring {
-            pos += 1;
+            i += 1;
             col += 1;
             continue;
         }
@@ -92,37 +97,33 @@ pub fn tokenize_py(
         let token_col = col;
 
         // Triple-quoted string (""" or ''')
-        if pos + 2 < len
-            && ((b == b'"'
-                && bytes[pos + 1] == b'"'
-                && bytes[pos + 2] == b'"')
-                || (b == b'\''
-                    && bytes[pos + 1] == b'\''
-                    && bytes[pos + 2] == b'\''))
+        if (c == '"' || c == '\'')
+            && nth_char(&chars, i + 1) == Some(c)
+            && nth_char(&chars, i + 2) == Some(c)
         {
-            let quote = b;
-            pos += 3;
+            let quote = c;
+            i += 3;
             col += 3;
-            while pos + 2 < len {
-                if bytes[pos] == quote
-                    && bytes[pos + 1] == quote
-                    && bytes[pos + 2] == quote
+            while i + 2 < n {
+                if chars[i].1 == quote
+                    && chars[i + 1].1 == quote
+                    && chars[i + 2].1 == quote
                 {
-                    pos += 3;
+                    i += 3;
                     col += 3;
                     break;
                 }
-                if bytes[pos] == b'\\' && pos + 1 < len {
-                    pos += 2;
+                if chars[i].1 == '\\' && i + 1 < n {
+                    i += 2;
                     col += 2;
                 } else {
-                    if bytes[pos] == b'\n' {
+                    if chars[i].1 == '\n' {
                         line += 1;
                         col = 0;
                     } else {
                         col += 1;
                     }
-                    pos += 1;
+                    i += 1;
                 }
             }
             tokens.push(Token {
@@ -134,25 +135,25 @@ pub fn tokenize_py(
         }
 
         // String literal (single or double quoted)
-        if b == b'\'' || b == b'"' {
-            let quote = b;
-            pos += 1;
+        if c == '\'' || c == '"' {
+            let quote = c;
+            i += 1;
             col += 1;
-            while pos < len && bytes[pos] != quote {
-                if bytes[pos] == b'\\' && pos + 1 < len {
-                    pos += 2;
+            while i < n && chars[i].1 != quote {
+                if chars[i].1 == '\\' && i + 1 < n {
+                    i += 2;
                     col += 2;
                 } else {
-                    if bytes[pos] == b'\n' {
+                    if chars[i].1 == '\n' {
                         // Unterminated string — break
                         break;
                     }
                     col += 1;
-                    pos += 1;
+                    i += 1;
                 }
             }
-            if pos < len && bytes[pos] == quote {
-                pos += 1;
+            if i < n && chars[i].1 == quote {
+                i += 1;
                 col += 1;
             }
             tokens.push(Token {
@@ -164,25 +165,31 @@ pub fn tokenize_py(
         }
 
         // Number literal
-        if b.is_ascii_digit()
-            || (b == b'.' && pos + 1 < len && bytes[pos + 1].is_ascii_digit())
+        if c.is_ascii_digit()
+            || (c == '.'
+                && nth_char(&chars, i + 1)
+                    .map_or(false, |p| p.is_ascii_digit()))
         {
-            while pos < len
-                && (bytes[pos].is_ascii_alphanumeric()
-                    || bytes[pos] == b'.'
-                    || bytes[pos] == b'_'
-                    || bytes[pos] == b'+'
-                    || bytes[pos] == b'-')
-            {
-                // Handle exponent sign: only allow +/- after e/E
-                if (bytes[pos] == b'+' || bytes[pos] == b'-')
-                    && pos > 0
-                    && !matches!(bytes[pos - 1], b'e' | b'E')
+            while i < n {
+                let cc = chars[i].1;
+                if cc.is_ascii_alphanumeric()
+                    || cc == '.'
+                    || cc == '_'
+                    || cc == '+'
+                    || cc == '-'
                 {
+                    // Handle exponent sign: only allow +/- after e/E
+                    if (cc == '+' || cc == '-')
+                        && i > 0
+                        && !matches!(chars[i - 1].1, 'e' | 'E')
+                    {
+                        break;
+                    }
+                    i += 1;
+                    col += 1;
+                } else {
                     break;
                 }
-                pos += 1;
-                col += 1;
             }
             tokens.push(Token {
                 value: NORMALIZED_LIT.to_string(),
@@ -193,71 +200,69 @@ pub fn tokenize_py(
         }
 
         // Identifier or keyword (including string prefixes like f"...", b"...", r"...")
-        if is_ident_start(b) {
-            let start = pos;
-            pos += 1;
+        if is_ident_start(c) {
+            let start_byte = chars[i].0;
+            let start_idx = i;
+            i += 1;
             col += 1;
-            while pos < len && is_ident_continue(bytes[pos]) {
-                pos += 1;
+            while i < n && is_ident_continue(chars[i].1) {
+                i += 1;
                 col += 1;
             }
-            let word = &source[start..pos];
+            let word = &source[start_byte..byte_at(i)];
 
             // Check for string prefixes (f, b, r, rb, br, etc.) followed by quote
-            if pos < len
-                && (bytes[pos] == b'"' || bytes[pos] == b'\'')
+            if i < n
+                && (chars[i].1 == '"' || chars[i].1 == '\'')
                 && is_string_prefix(word)
             {
-                // This is a prefixed string — treat the whole thing as a literal
-                // Re-position to the quote and let the string handler above run next iter?
-                // Actually, just consume the string here.
-                let quote = bytes[pos];
+                let quote = chars[i].1;
                 // Check for triple-quoted
-                if pos + 2 < len
-                    && bytes[pos + 1] == quote
-                    && bytes[pos + 2] == quote
+                if i + 2 < n
+                    && chars[i + 1].1 == quote
+                    && chars[i + 2].1 == quote
                 {
-                    pos += 3;
+                    i += 3;
                     col += 3;
-                    while pos + 2 < len {
-                        if bytes[pos] == quote
-                            && bytes[pos + 1] == quote
-                            && bytes[pos + 2] == quote
+                    while i + 2 < n {
+                        if chars[i].1 == quote
+                            && chars[i + 1].1 == quote
+                            && chars[i + 2].1 == quote
                         {
-                            pos += 3;
+                            i += 3;
                             col += 3;
                             break;
                         }
-                        if bytes[pos] == b'\\' && pos + 1 < len {
-                            pos += 2;
+                        if chars[i].1 == '\\' && i + 1 < n {
+                            i += 2;
                             col += 2;
                         } else {
-                            if bytes[pos] == b'\n' {
+                            if chars[i].1 == '\n' {
                                 line += 1;
                                 col = 0;
                             } else {
                                 col += 1;
                             }
-                            pos += 1;
+                            i += 1;
                         }
                     }
                 } else {
-                    pos += 1;
+                    i += 1;
                     col += 1;
-                    while pos < len && bytes[pos] != quote {
-                        if bytes[pos] == b'\\' && pos + 1 < len {
-                            pos += 2;
+                    while i < n && chars[i].1 != quote {
+                        if chars[i].1 == '\\' && i + 1 < n {
+                            i += 2;
                             col += 2;
                         } else {
-                            if bytes[pos] == b'\n' {
+                            if chars[i].1 == '\n' {
                                 break;
                             }
                             col += 1;
-                            pos += 1;
+                            i += 1;
                         }
                     }
-                    if pos < len && bytes[pos] == quote {
-                        pos += 1;
+                    if i < n && chars[i].1 == quote {
+                        i += 1;
                         col += 1;
                     }
                 }
@@ -266,6 +271,7 @@ pub fn tokenize_py(
                     line: token_line,
                     col: token_col,
                 });
+                let _ = start_idx;
                 continue;
             }
 
@@ -278,63 +284,70 @@ pub fn tokenize_py(
             continue;
         }
 
-        // Multi-character operators
-        if pos + 2 < len {
-            let three = &source[pos..pos + 3];
-            if matches!(three, "**=" | "//=" | ">>=" | "<<=") {
+        // Multi-character operators (all ASCII)
+        if i + 2 < n {
+            let three = (chars[i].1, chars[i + 1].1, chars[i + 2].1);
+            let op3 = match three {
+                ('*', '*', '=') => Some("**="),
+                ('/', '/', '=') => Some("//="),
+                ('>', '>', '=') => Some(">>="),
+                ('<', '<', '=') => Some("<<="),
+                _ => None,
+            };
+            if let Some(op) = op3 {
                 tokens.push(Token {
-                    value: three.to_string(),
+                    value: op.to_string(),
                     line: token_line,
                     col: token_col,
                 });
-                pos += 3;
+                i += 3;
                 col += 3;
                 continue;
             }
         }
-        if pos + 1 < len {
-            let two = &source[pos..pos + 2];
-            if matches!(
-                two,
-                "==" | "!="
-                    | "<="
-                    | ">="
-                    | "+="
-                    | "-="
-                    | "*="
-                    | "/="
-                    | "%="
-                    | "&="
-                    | "|="
-                    | "^="
-                    | "**"
-                    | "//"
-                    | ">>"
-                    | "<<"
-                    | "->"
-                    | ":="
-                    | ".."
-            ) {
+        if i + 1 < n {
+            let two = (chars[i].1, chars[i + 1].1);
+            let op2 = match two {
+                ('=', '=') => Some("=="),
+                ('!', '=') => Some("!="),
+                ('<', '=') => Some("<="),
+                ('>', '=') => Some(">="),
+                ('+', '=') => Some("+="),
+                ('-', '=') => Some("-="),
+                ('*', '=') => Some("*="),
+                ('/', '=') => Some("/="),
+                ('%', '=') => Some("%="),
+                ('&', '=') => Some("&="),
+                ('|', '=') => Some("|="),
+                ('^', '=') => Some("^="),
+                ('*', '*') => Some("**"),
+                ('/', '/') => Some("//"),
+                ('>', '>') => Some(">>"),
+                ('<', '<') => Some("<<"),
+                ('-', '>') => Some("->"),
+                (':', '=') => Some(":="),
+                ('.', '.') => Some(".."),
+                _ => None,
+            };
+            if let Some(op) = op2 {
                 tokens.push(Token {
-                    value: two.to_string(),
+                    value: op.to_string(),
                     line: token_line,
                     col: token_col,
                 });
-                pos += 2;
+                i += 2;
                 col += 2;
                 continue;
             }
         }
 
-        // Decorator — treat @ as a token
-        // Single-character tokens (operators, punctuation)
-        let ch = &source[pos..pos + 1];
+        // Single-character tokens (operators, punctuation, stray Unicode)
         tokens.push(Token {
-            value: ch.to_string(),
+            value: c.to_string(),
             line: token_line,
             col: token_col,
         });
-        pos += 1;
+        i += 1;
         col += 1;
     }
 
@@ -345,12 +358,18 @@ pub fn tokenize_py(
     }
 }
 
-fn is_ident_start(b: u8) -> bool {
-    b.is_ascii_alphabetic() || b == b'_'
+fn nth_char(chars: &[(usize, char)], idx: usize) -> Option<char> {
+    chars.get(idx).map(|&(_, c)| c)
 }
 
-fn is_ident_continue(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
+fn is_ident_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_' || (!c.is_ascii() && c.is_alphabetic())
+}
+
+fn is_ident_continue(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || c == '_'
+        || (!c.is_ascii() && (c.is_alphabetic() || c.is_numeric()))
 }
 
 fn is_string_prefix(word: &str) -> bool {
@@ -444,6 +463,29 @@ mod tests {
             values,
             vec!["@", "$ID", "def", "$ID", "(", ")", ":", "pass"]
         );
+    }
+
+    #[test]
+    fn test_non_ascii_does_not_panic() {
+        // Smart quotes, emoji, em-dash — previously triggered "byte index N
+        // is not a char boundary" panics in the operator/punctuation paths.
+        let source = "\
+# Migrate Image Size Unit ⚠ Script\n\
+x = \"hello — €\"\n\
+π = 3.14\n\
+# emoji at end ✅\n\
+";
+        let ft = tokenize_py(source, "test.py", 1);
+        assert!(!ft.tokens.is_empty());
+    }
+
+    #[test]
+    fn test_unicode_identifier() {
+        let source = "π = 3.14";
+        let ft = tokenize_py(source, "test.py", 1);
+        let values: Vec<&str> =
+            ft.tokens.iter().map(|t| t.value.as_str()).collect();
+        assert_eq!(values, vec!["$ID", "=", "$LIT"]);
     }
 
     // ---- End-to-end CPD tests with real Python source files on disk ----

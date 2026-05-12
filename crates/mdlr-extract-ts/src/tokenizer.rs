@@ -81,40 +81,45 @@ pub fn tokenize_ts(
     source_path: &str,
     generation_id: u64,
 ) -> FileTokens {
-    let bytes = source.as_bytes();
-    let len = bytes.len();
-    let mut pos = 0;
+    let chars: Vec<(usize, char)> = source.char_indices().collect();
+    let n = chars.len();
+    let source_len = source.len();
+    let mut i = 0;
     let mut line: u32 = 1;
     let mut col: u16 = 0;
     let mut ignoring = false;
     let mut tokens = Vec::new();
 
-    while pos < len {
-        let b = bytes[pos];
+    let byte_at = |idx: usize| -> usize {
+        if idx < n { chars[idx].0 } else { source_len }
+    };
+
+    while i < n {
+        let c = chars[i].1;
 
         // Newline
-        if b == b'\n' {
-            pos += 1;
+        if c == '\n' {
+            i += 1;
             line += 1;
             col = 0;
             continue;
         }
 
         // Whitespace
-        if b == b' ' || b == b'\t' || b == b'\r' {
-            pos += 1;
+        if c == ' ' || c == '\t' || c == '\r' {
+            i += 1;
             col += 1;
             continue;
         }
 
         // Line comment
-        if pos + 1 < len && b == b'/' && bytes[pos + 1] == b'/' {
-            let start = pos;
-            pos += 2;
-            while pos < len && bytes[pos] != b'\n' {
-                pos += 1;
+        if c == '/' && nth_char(&chars, i + 1) == Some('/') {
+            let start = chars[i].0;
+            i += 2;
+            while i < n && chars[i].1 != '\n' {
+                i += 1;
             }
-            let comment = &source[start..pos];
+            let comment = &source[start..byte_at(i)];
             if comment.contains("mdlr:ignore-start") {
                 ignoring = true;
             } else if comment.contains("mdlr:ignore-end") {
@@ -124,25 +129,23 @@ pub fn tokenize_ts(
         }
 
         // Block comment
-        if pos + 1 < len && b == b'/' && bytes[pos + 1] == b'*' {
-            let start = pos;
-            pos += 2;
-            while pos + 1 < len
-                && !(bytes[pos] == b'*' && bytes[pos + 1] == b'/')
-            {
-                if bytes[pos] == b'\n' {
+        if c == '/' && nth_char(&chars, i + 1) == Some('*') {
+            let start = chars[i].0;
+            i += 2;
+            while i + 1 < n && !(chars[i].1 == '*' && chars[i + 1].1 == '/') {
+                if chars[i].1 == '\n' {
                     line += 1;
                     col = 0;
                 } else {
                     col += 1;
                 }
-                pos += 1;
+                i += 1;
             }
-            if pos + 1 < len {
-                pos += 2; // skip */
+            if i + 1 < n {
+                i += 2; // skip */
                 col += 2;
             }
-            let comment = &source[start..pos];
+            let comment = &source[start..byte_at(i)];
             if comment.contains("mdlr:ignore-start") {
                 ignoring = true;
             } else if comment.contains("mdlr:ignore-end") {
@@ -153,13 +156,13 @@ pub fn tokenize_ts(
 
         // Skip tokens in ignored regions (but still track newlines for line counting)
         if ignoring {
-            if b == b'\n' {
+            if c == '\n' {
                 line += 1;
                 col = 0;
             } else {
                 col += 1;
             }
-            pos += 1;
+            i += 1;
             continue;
         }
 
@@ -167,26 +170,26 @@ pub fn tokenize_ts(
         let token_col = col;
 
         // String literal (single or double quoted)
-        if b == b'\'' || b == b'"' {
-            let quote = b;
-            pos += 1;
+        if c == '\'' || c == '"' {
+            let quote = c;
+            i += 1;
             col += 1;
-            while pos < len && bytes[pos] != quote {
-                if bytes[pos] == b'\\' && pos + 1 < len {
-                    pos += 2;
+            while i < n && chars[i].1 != quote {
+                if chars[i].1 == '\\' && i + 1 < n {
+                    i += 2;
                     col += 2;
                 } else {
-                    if bytes[pos] == b'\n' {
+                    if chars[i].1 == '\n' {
                         line += 1;
                         col = 0;
                     } else {
                         col += 1;
                     }
-                    pos += 1;
+                    i += 1;
                 }
             }
-            if pos < len {
-                pos += 1; // skip closing quote
+            if i < n {
+                i += 1; // skip closing quote
                 col += 1;
             }
             tokens.push(Token {
@@ -198,37 +201,35 @@ pub fn tokenize_ts(
         }
 
         // Template literal
-        if b == b'`' {
-            pos += 1;
+        if c == '`' {
+            i += 1;
             col += 1;
             let mut depth = 0;
-            while pos < len {
-                if bytes[pos] == b'\\' && pos + 1 < len {
-                    pos += 2;
+            while i < n {
+                let cc = chars[i].1;
+                if cc == '\\' && i + 1 < n {
+                    i += 2;
                     col += 2;
-                } else if bytes[pos] == b'$'
-                    && pos + 1 < len
-                    && bytes[pos + 1] == b'{'
-                {
+                } else if cc == '$' && i + 1 < n && chars[i + 1].1 == '{' {
                     depth += 1;
-                    pos += 2;
+                    i += 2;
                     col += 2;
-                } else if bytes[pos] == b'}' && depth > 0 {
+                } else if cc == '}' && depth > 0 {
                     depth -= 1;
-                    pos += 1;
+                    i += 1;
                     col += 1;
-                } else if bytes[pos] == b'`' && depth == 0 {
-                    pos += 1;
+                } else if cc == '`' && depth == 0 {
+                    i += 1;
                     col += 1;
                     break;
                 } else {
-                    if bytes[pos] == b'\n' {
+                    if cc == '\n' {
                         line += 1;
                         col = 0;
                     } else {
                         col += 1;
                     }
-                    pos += 1;
+                    i += 1;
                 }
             }
             tokens.push(Token {
@@ -240,16 +241,19 @@ pub fn tokenize_ts(
         }
 
         // Number literal
-        if b.is_ascii_digit()
-            || (b == b'.' && pos + 1 < len && bytes[pos + 1].is_ascii_digit())
+        if c.is_ascii_digit()
+            || (c == '.'
+                && nth_char(&chars, i + 1)
+                    .map_or(false, |p| p.is_ascii_digit()))
         {
-            while pos < len
-                && (bytes[pos].is_ascii_alphanumeric()
-                    || bytes[pos] == b'.'
-                    || bytes[pos] == b'_')
-            {
-                pos += 1;
-                col += 1;
+            while i < n {
+                let cc = chars[i].1;
+                if cc.is_ascii_alphanumeric() || cc == '.' || cc == '_' {
+                    i += 1;
+                    col += 1;
+                } else {
+                    break;
+                }
             }
             tokens.push(Token {
                 value: NORMALIZED_LIT.to_string(),
@@ -259,16 +263,16 @@ pub fn tokenize_ts(
             continue;
         }
 
-        // Identifier or keyword
-        if is_ident_start(b) {
-            let start = pos;
-            pos += 1;
+        // Identifier or keyword (Unicode-aware: supports `π`, etc.)
+        if is_ident_start(c) {
+            let start = chars[i].0;
+            i += 1;
             col += 1;
-            while pos < len && is_ident_continue(bytes[pos]) {
-                pos += 1;
+            while i < n && is_ident_continue(chars[i].1) {
+                i += 1;
                 col += 1;
             }
-            let word = &source[start..pos];
+            let word = &source[start..byte_at(i)];
             let value = if JS_KEYWORDS.contains(&word) {
                 word.to_string()
             } else {
@@ -278,77 +282,79 @@ pub fn tokenize_ts(
             continue;
         }
 
-        // Multi-character operators
-        if pos + 2 < len {
-            let three = &source[pos..pos + 3];
-            if matches!(
-                three,
-                "==="
-                    | "!=="
-                    | ">>>"
-                    | "**="
-                    | "&&="
-                    | "||="
-                    | "??="
-                    | "..."
-                    | "<<="
-                    | ">>="
-            ) {
+        // Multi-character operators (all ASCII)
+        if i + 2 < n {
+            let three = (chars[i].1, chars[i + 1].1, chars[i + 2].1);
+            let op3 = match three {
+                ('=', '=', '=') => Some("==="),
+                ('!', '=', '=') => Some("!=="),
+                ('>', '>', '>') => Some(">>>"),
+                ('*', '*', '=') => Some("**="),
+                ('&', '&', '=') => Some("&&="),
+                ('|', '|', '=') => Some("||="),
+                ('?', '?', '=') => Some("??="),
+                ('.', '.', '.') => Some("..."),
+                ('<', '<', '=') => Some("<<="),
+                ('>', '>', '=') => Some(">>="),
+                _ => None,
+            };
+            if let Some(op) = op3 {
                 tokens.push(Token {
-                    value: three.to_string(),
+                    value: op.to_string(),
                     line: token_line,
                     col: token_col,
                 });
-                pos += 3;
+                i += 3;
                 col += 3;
                 continue;
             }
         }
-        if pos + 1 < len {
-            let two = &source[pos..pos + 2];
-            if matches!(
-                two,
-                "==" | "!="
-                    | "<="
-                    | ">="
-                    | "&&"
-                    | "||"
-                    | "++"
-                    | "--"
-                    | "+="
-                    | "-="
-                    | "*="
-                    | "/="
-                    | "%="
-                    | "=>"
-                    | "**"
-                    | "??"
-                    | "?."
-                    | "<<"
-                    | ">>"
-                    | "&="
-                    | "|="
-                    | "^="
-            ) {
+        if i + 1 < n {
+            let two = (chars[i].1, chars[i + 1].1);
+            let op2 = match two {
+                ('=', '=') => Some("=="),
+                ('!', '=') => Some("!="),
+                ('<', '=') => Some("<="),
+                ('>', '=') => Some(">="),
+                ('&', '&') => Some("&&"),
+                ('|', '|') => Some("||"),
+                ('+', '+') => Some("++"),
+                ('-', '-') => Some("--"),
+                ('+', '=') => Some("+="),
+                ('-', '=') => Some("-="),
+                ('*', '=') => Some("*="),
+                ('/', '=') => Some("/="),
+                ('%', '=') => Some("%="),
+                ('=', '>') => Some("=>"),
+                ('*', '*') => Some("**"),
+                ('?', '?') => Some("??"),
+                ('?', '.') => Some("?."),
+                ('<', '<') => Some("<<"),
+                ('>', '>') => Some(">>"),
+                ('&', '=') => Some("&="),
+                ('|', '=') => Some("|="),
+                ('^', '=') => Some("^="),
+                _ => None,
+            };
+            if let Some(op) = op2 {
                 tokens.push(Token {
-                    value: two.to_string(),
+                    value: op.to_string(),
                     line: token_line,
                     col: token_col,
                 });
-                pos += 2;
+                i += 2;
                 col += 2;
                 continue;
             }
         }
 
-        // Single-character tokens (operators, punctuation)
-        let ch = &source[pos..pos + 1];
+        // Single-character tokens (operators, punctuation, stray Unicode)
         tokens.push(Token {
-            value: ch.to_string(),
+            value: c.to_string(),
             line: token_line,
             col: token_col,
         });
-        pos += 1;
+        i += 1;
         col += 1;
     }
 
@@ -359,12 +365,22 @@ pub fn tokenize_ts(
     }
 }
 
-fn is_ident_start(b: u8) -> bool {
-    b.is_ascii_alphabetic() || b == b'_' || b == b'$'
+fn nth_char(chars: &[(usize, char)], idx: usize) -> Option<char> {
+    chars.get(idx).map(|&(_, c)| c)
 }
 
-fn is_ident_continue(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+fn is_ident_start(c: char) -> bool {
+    c.is_ascii_alphabetic()
+        || c == '_'
+        || c == '$'
+        || (!c.is_ascii() && c.is_alphabetic())
+}
+
+fn is_ident_continue(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || c == '_'
+        || c == '$'
+        || (!c.is_ascii() && (c.is_alphabetic() || c.is_numeric()))
 }
 
 #[cfg(test)]
@@ -485,5 +501,33 @@ const b = 3;"#;
         );
         // Note: "string" is not in our keywords list, so it's $ID. This is fine
         // for CPD since we normalize identifiers anyway.
+    }
+
+    #[test]
+    fn test_non_ascii_does_not_panic() {
+        // Smart quotes, emoji, currency, em-dash, JSX text — all things that
+        // previously triggered "byte index N is not a char boundary" panics.
+        let source = r#"
+            // Comment with emoji ✅ and smart quote ’ and €
+            const a = "hello — world";
+            const jsx = <div>Welcome € friend</div>;
+            const π = 3.14;
+            // mdlr:ignore-start
+            const ignored = "🟢";
+            // mdlr:ignore-end
+        "#;
+        let ft = tokenize_ts(source, "test.tsx", 1);
+        // Should produce some tokens and not panic; exact content not asserted
+        // because stray Unicode in JSX is best-effort.
+        assert!(!ft.tokens.is_empty());
+    }
+
+    #[test]
+    fn test_unicode_identifier() {
+        let source = "const π = 3.14;";
+        let ft = tokenize_ts(source, "test.ts", 1);
+        let values: Vec<&str> =
+            ft.tokens.iter().map(|t| t.value.as_str()).collect();
+        assert_eq!(values, vec!["const", "$ID", "=", "$LIT", ";"]);
     }
 }
