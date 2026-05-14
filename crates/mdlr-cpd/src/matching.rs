@@ -20,6 +20,13 @@ pub struct ClonePair {
 const HASH_BASE: u64 = 31;
 const HASH_MOD: u64 = 1_000_000_007;
 
+/// Hash buckets with more positions than this are treated as boilerplate
+/// (very common token sequences) and skipped. The O(K²) pairwise loop over
+/// a bucket of K positions, plus the inline subsumption check on the growing
+/// per-pair clone list, dominates runtime when a single sequence repeats
+/// hundreds of times across the codebase.
+const MAX_BUCKET_POSITIONS: usize = 200;
+
 /// A single token entry in the flattened token stream, carrying its file index.
 #[derive(Clone)]
 struct FlatToken {
@@ -34,6 +41,14 @@ struct FlatToken {
 /// `min_tokens` is the minimum number of tokens for a window to be considered.
 /// Returns a list of clone pairs with their locations.
 pub fn find_clones(files: &[FileTokens], min_tokens: usize) -> Vec<ClonePair> {
+    find_clones_with_progress(files, min_tokens, |_| {})
+}
+
+pub fn find_clones_with_progress(
+    files: &[FileTokens],
+    min_tokens: usize,
+    on_progress: impl Fn(usize),
+) -> Vec<ClonePair> {
     if min_tokens == 0 || files.is_empty() {
         return Vec::new();
     }
@@ -79,6 +94,7 @@ pub fn find_clones(files: &[FileTokens], min_tokens: usize) -> Vec<ClonePair> {
 
     // Compute rolling hashes per file segment (don't hash across file boundaries)
     for (file_idx, file) in files.iter().enumerate() {
+        on_progress(file_idx);
         let start = file_boundaries[file_idx];
         let end = file_boundaries[file_idx + 1];
         let n = end - start;
@@ -118,8 +134,8 @@ pub fn find_clones(files: &[FileTokens], min_tokens: usize) -> Vec<ClonePair> {
     let mut clones_by_pair: HashMap<(usize, usize), Vec<ClonePair>> =
         HashMap::new();
 
-    for (_hash, positions) in &hash_map {
-        if positions.len() < 2 {
+    for positions in hash_map.values() {
+        if positions.len() < 2 || positions.len() > MAX_BUCKET_POSITIONS {
             continue;
         }
 

@@ -17,16 +17,22 @@ pub struct FileLocMetrics {
 }
 
 impl FileLocMetrics {
-    /// Compute file LOC metrics from a graph
     #[tracing::instrument(name = "compute_file_loc", skip_all)]
     pub fn compute(graph: &Graph) -> Self {
-        // Group units by file and find the max end_line per file
+        Self::compute_with_progress(graph, |_| {})
+    }
+
+    pub fn compute_with_progress(
+        graph: &Graph,
+        on_progress: impl Fn(usize),
+    ) -> Self {
         let mut file_max_line: HashMap<String, usize> = HashMap::new();
 
-        for unit in &graph.units {
+        for (i, unit) in graph.units.iter().enumerate() {
             let file_path = unit.file.to_string_lossy().to_string();
             let entry = file_max_line.entry(file_path).or_insert(0);
             *entry = (*entry).max(unit.span.end_line);
+            on_progress(i);
         }
 
         Self::from_counts(file_max_line)

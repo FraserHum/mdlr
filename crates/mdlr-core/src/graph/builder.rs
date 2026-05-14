@@ -7,14 +7,21 @@ use std::collections::{HashMap, HashSet};
 /// representing the call relationships. It uses both exact matching and
 /// heuristic name resolution to map call expressions to their target units.
 pub fn build(units: Vec<Unit>) -> Graph {
+    build_with_progress(units, |_| {})
+}
+
+pub fn build_with_progress(
+    units: Vec<Unit>,
+    on_progress: impl Fn(usize),
+) -> Graph {
     let mut graph = Graph::new();
 
     let unit_ids: HashSet<_> = units.iter().map(|u| u.id.clone()).collect();
     let name_to_ids = build_name_index(&units);
 
-    // Resolve calls and create edges
-    for unit in &units {
+    for (i, unit) in units.iter().enumerate() {
         resolve_unit_calls(&mut graph, unit, &unit_ids, &name_to_ids);
+        on_progress(i);
     }
 
     for unit in units {

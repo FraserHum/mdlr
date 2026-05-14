@@ -38,6 +38,9 @@ pub enum Command {
         /// Scope analysis to a specific directory (combines with diff/all mode)
         #[arg(short = 'f', long)]
         filter: Option<String>,
+        /// Suppress progress display
+        #[arg(short = 'q', long)]
+        quiet: bool,
     },
     /// List supported metrics with descriptions
     Metrics {

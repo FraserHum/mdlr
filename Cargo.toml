@@ -41,6 +41,7 @@ tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
 rayon = "1"
+indicatif = "0.17"
 
 # Rust extractor (rust-analyzer published API, pinned to 0.0.307)
 ra_ap_hir = "=0.0.307"

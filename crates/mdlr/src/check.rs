@@ -9,8 +9,8 @@ use crate::cache::CacheStore;
 use crate::cli::OutputFormat;
 use crate::config;
 use crate::extraction::{
-    extract_go, extract_py, extract_rust, extract_ts, load_entries_from_dir,
-    load_tokens_from_dir,
+    extract_go, extract_py, extract_rust, extract_ts, has_python_project,
+    has_ts_files, load_entries_from_dir, load_tokens_from_dir,
 };
 use crate::find_project_root;
 use crate::json_output::{
@@ -18,8 +18,9 @@ use crate::json_output::{
     build_file_loc_json, build_struct_json,
 };
 use crate::metrics_rows::{MetricsBundle, collect_metric_rows};
+use crate::progress::CheckProgress;
 use crate::timing;
-use mdlr_core::{Graph, Unit, build as build_graph};
+use mdlr_core::{Graph, Unit, build_with_progress as build_graph};
 use mdlr_metrics::{
     BucketedMetrics, ComplexityMetrics, FileLocMetrics, StructMetrics,
     StructuralMetrics, Thresholds,
@@ -229,29 +230,50 @@ fn git_diff_name_only(root: &Path, args: &[&str]) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Compute all metrics from units
 #[tracing::instrument(name = "compute_metrics", skip_all)]
 fn compute_all_metrics(
     units: Vec<Unit>,
     all_tokens: &[mdlr_cpd::FileTokens],
     scope_files: Option<&HashSet<PathBuf>>,
     config: &config::Config,
+    progress: &CheckProgress,
 ) -> ComputedMetrics {
-    let graph =
-        tracing::info_span!("build_graph").in_scope(|| build_graph(units));
+    let unit_count = units.len() as u64;
+    let bar = progress.start_bar("Building graph", unit_count);
+    let graph = tracing::info_span!("build_graph")
+        .in_scope(|| build_graph(units, |i| bar.set_position(i as u64)));
+    bar.finish();
+
+    let total = graph.units.len() as u64;
+    let bar = progress.start_bar("Computing metrics", total * 4);
     let structural = compute_structural(
         &graph,
         config.hub.min_fan_in,
         config.hub.min_fan_out,
+        |i| bar.set_position(i as u64),
     );
-    let complexity = ComplexityMetrics::compute(&graph);
-    let struct_metrics = StructMetrics::compute(&graph);
-    let file_loc = FileLocMetrics::compute(&graph);
+    let complexity = ComplexityMetrics::compute_with_progress(&graph, |i| {
+        bar.set_position(total + i as u64)
+    });
+    let struct_metrics = StructMetrics::compute_with_progress(&graph, |i| {
+        bar.set_position(total * 2 + i as u64)
+    });
+    let file_loc = FileLocMetrics::compute_with_progress(&graph, |i| {
+        bar.set_position(total * 3 + i as u64)
+    });
+    bar.finish();
 
+    let token_file_count = all_tokens.len() as u64;
+    let bar = progress.start_bar("Detecting duplicates", token_file_count);
     let duplication = tracing::info_span!("cpd").in_scope(|| {
-        let clones = mdlr_cpd::find_clones(all_tokens, config.cpd.min_tokens);
+        let clones = mdlr_cpd::find_clones_with_progress(
+            all_tokens,
+            config.cpd.min_tokens,
+            |i| bar.set_position(i as u64),
+        );
         mdlr_cpd::compute_duplication(&clones, all_tokens, scope_files)
     });
+    bar.finish();
 
     ComputedMetrics {
         graph,
@@ -524,25 +546,56 @@ fn load_filtered_units(
     Ok((entries, units, all_tokens, scope_files))
 }
 
+fn run_extractor(
+    name: &str,
+    progress: &CheckProgress,
+    f: impl FnOnce() -> Result<bool>,
+) {
+    let spinner = progress.start_spinner(name);
+    match f() {
+        Ok(true) => spinner.finish(),
+        Ok(false) => spinner.finish_warn("partial"),
+        Err(e) => {
+            spinner.finish_warn("failed");
+            eprintln!("Warning: {name} failed: {e:#}");
+        }
+    }
+}
+
 /// Extract, load, validate, and compute all metrics.
 fn extract_and_analyze(
     ctx: &CheckContext,
     filter: &CheckFilter,
     folder: Option<&Path>,
+    progress: &CheckProgress,
 ) -> Result<(ComputedMetrics, usize)> {
-    extract_rust(&ctx.store, ctx.generation_id)?;
-    if let Err(e) = extract_ts(&ctx.store, ctx.generation_id) {
-        eprintln!("Warning: TS extraction failed: {e:#}");
+    let root = ctx.store.root();
+
+    if root.join("Cargo.toml").exists() {
+        run_extractor("Extracting Rust", progress, || {
+            extract_rust(&ctx.store, ctx.generation_id)
+        });
     }
-    if let Err(e) = extract_go(&ctx.store, ctx.generation_id) {
-        eprintln!("Warning: Go extraction failed: {e:#}");
+    if has_ts_files(root) {
+        run_extractor("Extracting TypeScript", progress, || {
+            extract_ts(&ctx.store, ctx.generation_id)
+        });
     }
-    if let Err(e) = extract_py(&ctx.store, ctx.generation_id) {
-        eprintln!("Warning: Python extraction failed: {e:#}");
+    if root.join("go.mod").exists() {
+        run_extractor("Extracting Go", progress, || {
+            extract_go(&ctx.store, ctx.generation_id)
+        });
+    }
+    if has_python_project(root) {
+        run_extractor("Extracting Python", progress, || {
+            extract_py(&ctx.store, ctx.generation_id)
+        });
     }
 
+    let spinner = progress.start_spinner("Loading cache");
     let (entries, units, all_tokens, scope_files) =
         load_filtered_units(&ctx.store, filter, folder, ctx.generation_id)?;
+    spinner.finish();
 
     if let CheckFilter::Symbol(symbol_id) = filter {
         if !units.iter().any(|u| u.id == *symbol_id) {
@@ -559,6 +612,7 @@ fn extract_and_analyze(
         &all_tokens,
         scope_files.as_ref(),
         &ctx.config,
+        progress,
     );
     Ok((computed, entry_count))
 }
@@ -571,9 +625,11 @@ pub fn handle_check(
     timing: bool,
     all: bool,
     filter_dir: Option<&str>,
+    quiet: bool,
     explicit_root: Option<&Path>,
 ) -> Result<()> {
     let printer = setup_timing(timing);
+    let progress = CheckProgress::new(quiet);
     let ctx = CheckContext::new(explicit_root)?;
 
     // Resolve --filter directory to a canonical path
@@ -608,7 +664,7 @@ pub fn handle_check(
     };
 
     let (computed, entry_count) =
-        extract_and_analyze(&ctx, &filter, folder.as_deref())?;
+        extract_and_analyze(&ctx, &filter, folder.as_deref(), &progress)?;
 
     let result = match format {
         OutputFormat::Text => format_text_output(

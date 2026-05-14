@@ -12,26 +12,28 @@ use crate::cache::{CacheStore, FileCacheEntry};
 
 /// Run an in-process extractor and convert errors/panics into a warning.
 ///
-/// Mirrors the prior shell-out behavior, where a non-zero exit status was
-/// downgraded to "Warning: <lang> extraction had errors". Wrapping in
-/// `catch_unwind` keeps a panic in any single extractor (rust-analyzer in
-/// particular) from terminating the whole `mdlr` invocation.
-fn run_extractor<F>(language: &str, f: F)
+/// Returns `true` if the extractor completed cleanly, `false` if it errored or
+/// panicked (in which case a warning is printed). Wrapping in `catch_unwind`
+/// keeps a panic in any single extractor (rust-analyzer in particular) from
+/// terminating the whole `mdlr` invocation.
+fn run_extractor<F>(language: &str, f: F) -> bool
 where
     F: FnOnce() -> Result<()>,
 {
     let result = std::panic::catch_unwind(AssertUnwindSafe(f));
     match result {
-        Ok(Ok(())) => {}
+        Ok(Ok(())) => true,
         Ok(Err(e)) => {
             eprintln!(
                 "Warning: {language} extraction had errors (results may be partial): {e:#}"
             );
+            false
         }
         Err(_) => {
             eprintln!(
                 "Warning: {language} extraction panicked (results may be partial)"
             );
+            false
         }
     }
 }
@@ -40,12 +42,12 @@ where
 ///
 /// Only runs if a `Cargo.toml` exists at the workspace root.
 #[tracing::instrument(name = "extract", skip_all)]
-pub fn extract_rust(store: &CacheStore, generation_id: u64) -> Result<()> {
+pub fn extract_rust(store: &CacheStore, generation_id: u64) -> Result<bool> {
     let workspace_root = store.root();
 
     let manifest_path = workspace_root.join("Cargo.toml");
     if !manifest_path.exists() {
-        return Ok(());
+        return Ok(true);
     }
 
     // The rust extractor's diagnostics path is gated on this env var; preserve
@@ -56,7 +58,7 @@ pub fn extract_rust(store: &CacheStore, generation_id: u64) -> Result<()> {
 
     let cache_dir = store.cache_dir().to_path_buf();
     let workspace_root = workspace_root.to_path_buf();
-    run_extractor("Rust", || {
+    let success = run_extractor("Rust", || {
         mdlr_extract_rust::extract(
             &manifest_path,
             &cache_dir,
@@ -66,11 +68,11 @@ pub fn extract_rust(store: &CacheStore, generation_id: u64) -> Result<()> {
         )
     });
 
-    Ok(())
+    Ok(success)
 }
 
 /// Detect whether the project has TypeScript/JavaScript files.
-fn has_ts_files(root: &Path) -> bool {
+pub fn has_ts_files(root: &Path) -> bool {
     if root.join("tsconfig.json").exists()
         || root.join("package.json").exists()
     {
@@ -90,15 +92,15 @@ fn has_ts_files(root: &Path) -> bool {
 
 /// Run the in-process TS/JS extractor against the workspace at `store.root()`.
 #[tracing::instrument(name = "extract_ts", skip_all)]
-pub fn extract_ts(store: &CacheStore, generation_id: u64) -> Result<()> {
+pub fn extract_ts(store: &CacheStore, generation_id: u64) -> Result<bool> {
     let workspace_root = store.root();
     if !has_ts_files(workspace_root) {
-        return Ok(());
+        return Ok(true);
     }
 
     let cache_dir = store.cache_dir().to_path_buf();
     let workspace_root = workspace_root.to_path_buf();
-    run_extractor("TS", || {
+    let success = run_extractor("TS", || {
         mdlr_extract_ts::extract(
             &workspace_root,
             &cache_dir,
@@ -106,7 +108,7 @@ pub fn extract_ts(store: &CacheStore, generation_id: u64) -> Result<()> {
         )
     });
 
-    Ok(())
+    Ok(success)
 }
 
 /// Find the `mdlr-extract-go` binary, checking next to our own binary first.
@@ -137,15 +139,15 @@ fn find_extract_go_binary() -> Option<PathBuf> {
 ///
 /// Only runs if a `go.mod` exists at the workspace root.
 #[tracing::instrument(name = "extract_go", skip_all)]
-pub fn extract_go(store: &CacheStore, generation_id: u64) -> Result<()> {
+pub fn extract_go(store: &CacheStore, generation_id: u64) -> Result<bool> {
     let extract_bin = match find_extract_go_binary() {
         Some(bin) => bin,
-        None => return Ok(()), // silently skip if not available
+        None => return Ok(true),
     };
 
     let workspace_root = store.root();
     if !workspace_root.join("go.mod").exists() {
-        return Ok(());
+        return Ok(true);
     }
 
     let status = std::process::Command::new(&extract_bin)
@@ -161,17 +163,11 @@ pub fn extract_go(store: &CacheStore, generation_id: u64) -> Result<()> {
         .status()
         .context("Failed to run mdlr-extract-go")?;
 
-    if !status.success() {
-        eprintln!(
-            "Warning: Go extraction had errors (results may be partial)"
-        );
-    }
-
-    Ok(())
+    Ok(status.success())
 }
 
 /// Detect whether the project has Python files.
-fn has_python_project(root: &Path) -> bool {
+pub fn has_python_project(root: &Path) -> bool {
     if root.join("pyproject.toml").exists()
         || root.join("setup.py").exists()
         || root.join("setup.cfg").exists()
@@ -192,15 +188,15 @@ fn has_python_project(root: &Path) -> bool {
 
 /// Run the in-process Python extractor against the workspace at `store.root()`.
 #[tracing::instrument(name = "extract_py", skip_all)]
-pub fn extract_py(store: &CacheStore, generation_id: u64) -> Result<()> {
+pub fn extract_py(store: &CacheStore, generation_id: u64) -> Result<bool> {
     let workspace_root = store.root();
     if !has_python_project(workspace_root) {
-        return Ok(());
+        return Ok(true);
     }
 
     let cache_dir = store.cache_dir().to_path_buf();
     let workspace_root = workspace_root.to_path_buf();
-    run_extractor("Python", || {
+    let success = run_extractor("Python", || {
         mdlr_extract_py::extract(
             &workspace_root,
             &cache_dir,
@@ -208,7 +204,7 @@ pub fn extract_py(store: &CacheStore, generation_id: u64) -> Result<()> {
         )
     });
 
-    Ok(())
+    Ok(success)
 }
 
 /// Recursively load FileCacheEntry JSON files from a directory.

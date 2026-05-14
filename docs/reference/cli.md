@@ -14,7 +14,7 @@
 Run analysis and display metrics.
 
 ```bash
-mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A] [-f <dir>]
+mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A] [-f <dir>] [-q]
 ```
 
 | Option | Default | Description |
@@ -25,6 +25,7 @@ mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A] [-f <dir>]
 | `--format` | `text` | Output format: `text` or `json` |
 | `-A, --all` | false | Analyze all files even when on a branch |
 | `-f, --filter` | - | Scope analysis to a specific directory (combines with diff/all mode) |
+| `-q, --quiet` | false | Suppress progress display (progress is shown by default when stderr is a TTY) |
 
 By default, `check` uses **diff mode** on branches (only analyzing files changed since main/master) and analyzes all files when on main/master. Use `-A` to force analyzing all files when on a branch. Use `-f` to scope metrics to a specific directory — this works in both diff and all modes.
 

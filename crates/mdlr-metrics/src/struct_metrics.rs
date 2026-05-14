@@ -30,8 +30,17 @@ pub struct LcomMetrics {
 impl StructMetrics {
     #[tracing::instrument(name = "compute_struct_metrics", skip_all)]
     pub fn compute(graph: &Graph) -> Self {
+        Self::compute_with_progress(graph, |_| {})
+    }
+
+    pub fn compute_with_progress(
+        graph: &Graph,
+        on_progress: impl Fn(usize),
+    ) -> Self {
         let methods_per_struct = compute_methods_per_struct(graph);
+        on_progress(graph.units.len() / 2);
         let lcom = compute_lcom(graph);
+        on_progress(graph.units.len());
 
         Self { methods_per_struct, lcom }
     }

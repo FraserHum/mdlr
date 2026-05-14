@@ -35,16 +35,23 @@ pub struct ParamMetrics {
 }
 
 impl ComplexityMetrics {
-    /// Compute complexity metrics from a graph
     #[tracing::instrument(name = "compute_complexity", skip_all)]
     pub fn compute(graph: &Graph) -> Self {
+        Self::compute_with_progress(graph, |_| {})
+    }
+
+    pub fn compute_with_progress(
+        graph: &Graph,
+        on_progress: impl Fn(usize),
+    ) -> Self {
         let mut sizes: HashMap<String, usize> = HashMap::new();
         let mut params: HashMap<String, usize> = HashMap::new();
         let mut cyclomatic: HashMap<String, usize> = HashMap::new();
         let mut cognitive: HashMap<String, usize> = HashMap::new();
         let mut max_scope: HashMap<String, usize> = HashMap::new();
 
-        for unit in &graph.units {
+        for (i, unit) in graph.units.iter().enumerate() {
+            on_progress(i);
             // Only compute complexity for functions and methods
             if unit.kind != UnitKind::Function && unit.kind != UnitKind::Method
             {

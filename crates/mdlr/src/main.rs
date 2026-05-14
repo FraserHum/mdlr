@@ -11,6 +11,7 @@ mod ignore_commands;
 mod json_output;
 mod metrics_commands;
 mod metrics_rows;
+mod progress;
 mod symbol_commands;
 mod timing;
 mod walk;
@@ -53,18 +54,26 @@ fn main() -> Result<()> {
     let root = cli.root.as_deref();
 
     match cli.command {
-        Command::Check { target, k, pretty, format, timing, all, filter } => {
-            check::handle_check(
-                target.as_deref(),
-                k,
-                pretty,
-                format,
-                timing,
-                all,
-                filter.as_deref(),
-                root,
-            )
-        }
+        Command::Check {
+            target,
+            k,
+            pretty,
+            format,
+            timing,
+            all,
+            filter,
+            quiet,
+        } => check::handle_check(
+            target.as_deref(),
+            k,
+            pretty,
+            format,
+            timing,
+            all,
+            filter.as_deref(),
+            quiet,
+            root,
+        ),
         Command::Metrics { command } => {
             metrics_commands::handle_metrics(command, root)
         }

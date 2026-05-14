@@ -51,6 +51,7 @@ pub fn compute(graph: &Graph) -> StructuralMetrics {
         graph,
         DEFAULT_HUB_MIN_FAN_IN,
         DEFAULT_HUB_MIN_FAN_OUT,
+        |_| {},
     )
 }
 
@@ -59,6 +60,7 @@ pub fn compute_with_hub_thresholds(
     graph: &Graph,
     hub_min_fan_in: usize,
     hub_min_fan_out: usize,
+    on_progress: impl Fn(usize),
 ) -> StructuralMetrics {
     let node_count = graph.units.len();
     let edge_count = graph.edges.len();
@@ -77,9 +79,10 @@ pub fn compute_with_hub_thresholds(
         fan_in_counts.insert(unit.id.clone(), 0);
     }
 
-    for edge in &graph.edges {
+    for (i, edge) in graph.edges.iter().enumerate() {
         *fan_out_counts.entry(edge.from.clone()).or_insert(0) += 1;
         *fan_in_counts.entry(edge.to.clone()).or_insert(0) += 1;
+        on_progress(i);
     }
 
     // Build hub info for units with high fan_in AND high fan_out

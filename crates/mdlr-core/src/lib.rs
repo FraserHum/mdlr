@@ -1,6 +1,8 @@
 pub mod graph;
 
-pub use graph::{Edge, EdgeKind, Graph, Span, Unit, UnitKind, build};
+pub use graph::{
+    Edge, EdgeKind, Graph, Span, Unit, UnitKind, build, build_with_progress,
+};
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
