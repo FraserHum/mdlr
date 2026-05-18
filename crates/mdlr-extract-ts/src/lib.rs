@@ -7,7 +7,7 @@ mod tokenizer;
 mod visitor;
 
 use anyhow::{Context, Result};
-use mdlr_core::FileCacheEntry;
+use mdlr_core::{FileCacheEntry, cache_file_path};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use swc_common::{SourceMap, sync::Lrc};
@@ -131,8 +131,8 @@ fn process_file(
         cached_at: timestamp,
     };
 
-    let mut output_file = output_dir.join(&rel_path);
-    output_file.set_extension("json");
+    let output_file =
+        cache_file_path(output_dir, Path::new(&rel_path), "json");
 
     if let Some(parent) = output_file.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -148,8 +148,8 @@ fn process_file(
         let file_tokens =
             tokenizer::tokenize_ts(&source_text, &rel_path, timestamp);
         let token_bytes = mdlr_cpd::binary::serialize(&file_tokens);
-        let mut token_file = output_dir.join(&rel_path);
-        token_file.set_extension("tokens");
+        let token_file =
+            cache_file_path(output_dir, Path::new(&rel_path), "tokens");
         if let Err(e) = std::fs::write(&token_file, token_bytes) {
             eprintln!("Failed to write tokens for {}: {e}", rel_path);
         }

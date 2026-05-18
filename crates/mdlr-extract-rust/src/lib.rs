@@ -9,7 +9,7 @@ mod visitor;
 mod walk;
 
 use anyhow::{Context, Result};
-use mdlr_core::FileCacheEntry;
+use mdlr_core::{cache_file_path, FileCacheEntry};
 use ra_ap_hir::{attach_db, Crate, Semantics};
 use ra_ap_load_cargo::{
     load_workspace_at, LoadCargoConfig, ProcMacroServerChoice,
@@ -108,8 +108,8 @@ pub fn extract(
             cached_at: timestamp,
         };
 
-        let mut output_file = cache_dir.join(&source_path);
-        output_file.set_extension("json");
+        let output_file =
+            cache_file_path(cache_dir, Path::new(&source_path), "json");
 
         if let Some(parent) = output_file.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -141,8 +141,8 @@ pub fn extract(
                 timestamp,
             );
             let token_bytes = mdlr_cpd::binary::serialize(&file_tokens);
-            let mut token_file = cache_dir.join(&source_path);
-            token_file.set_extension("tokens");
+            let token_file =
+                cache_file_path(cache_dir, Path::new(&source_path), "tokens");
             if let Err(e) = std::fs::write(&token_file, token_bytes) {
                 eprintln!("Failed to write tokens for {}: {}", source_path, e);
             }

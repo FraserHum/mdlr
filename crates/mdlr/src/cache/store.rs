@@ -1,6 +1,6 @@
 use super::ignores_store::IgnoresStore;
 use anyhow::{Context, Result};
-use mdlr_core::FileCacheEntry;
+use mdlr_core::{FileCacheEntry, cache_file_path};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -36,12 +36,10 @@ impl CacheStore {
     }
 
     /// Convert a source file path to its corresponding cache file path.
-    /// e.g., src/foo.rs -> .mdlr/cache/src/foo.json
+    /// e.g., src/foo.rs -> .mdlr/cache/src/foo.rs.json
     pub fn cache_path(&self, source: &Path) -> PathBuf {
         let relative = source.strip_prefix(&self.root).unwrap_or(source);
-        let mut cache_file = self.cache_dir().join(relative);
-        cache_file.set_extension("json");
-        cache_file
+        cache_file_path(&self.cache_dir(), relative, "json")
     }
 
     /// Load a cache entry for a source file.
@@ -79,6 +77,6 @@ mod tests {
 
         let source = temp.path().join("src/foo.rs");
         let cache = store.cache_path(&source);
-        assert!(cache.ends_with("src/foo.json"));
+        assert!(cache.ends_with("src/foo.rs.json"));
     }
 }

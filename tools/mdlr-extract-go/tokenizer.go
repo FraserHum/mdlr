@@ -156,9 +156,7 @@ func serializeTokens(ft *FileTokens) []byte {
 
 // writeTokenFile writes a .tokens binary file alongside the .json cache file.
 func writeTokenFile(outputDir, relPath string, ft *FileTokens) error {
-	outFile := filepath.Join(outputDir, relPath)
-	ext := filepath.Ext(outFile)
-	outFile = outFile[:len(outFile)-len(ext)] + ".tokens"
+	outFile := filepath.Join(outputDir, relPath) + ".tokens"
 
 	if err := os.MkdirAll(filepath.Dir(outFile), 0o755); err != nil {
 		return err

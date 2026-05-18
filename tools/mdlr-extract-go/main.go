@@ -157,9 +157,7 @@ func run(root, outputDir string, timestamp uint64) error {
 			CachedAt:   timestamp,
 		}
 
-		outFile := filepath.Join(outputDir, relPath)
-		ext := filepath.Ext(outFile)
-		outFile = outFile[:len(outFile)-len(ext)] + ".json"
+		outFile := filepath.Join(outputDir, relPath) + ".json"
 
 		if err := os.MkdirAll(filepath.Dir(outFile), 0o755); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
