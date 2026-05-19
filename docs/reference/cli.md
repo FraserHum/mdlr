@@ -14,7 +14,7 @@
 Run analysis and display metrics.
 
 ```bash
-mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A] [-f <dir>] [-q]
+mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A] [-f <dir>] [-q] [--cov <path>]...
 ```
 
 | Option | Default | Description |
@@ -26,6 +26,7 @@ mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A] [-f <dir>] 
 | `-A, --all` | false | Analyze all files even when on a branch |
 | `-f, --filter` | - | Scope analysis to a specific directory (combines with diff/all mode) |
 | `-q, --quiet` | false | Suppress progress display (progress is shown by default when stderr is a TTY) |
+| `--cov <PATH>` | - | LCOV coverage file to overlay onto changed files. Repeatable: pass `--cov` once per file and they are merged. Adds two metrics: `line_cov` (per-function %) and `uncov_branches` (per-function untaken-branch count, only when the lcov has BRDA records). See [line coverage](../metrics/line-coverage.md) and [uncovered branches](../metrics/uncov-branches.md). |
 
 By default, `check` uses **diff mode** on branches (only analyzing files changed since main/master) and analyzes all files when on main/master. Use `-A` to force analyzing all files when on a branch. Use `-f` to scope metrics to a specific directory — this works in both diff and all modes.
 
@@ -69,6 +70,12 @@ mdlr check --pretty
 
 # JSON output for scripting
 mdlr check --format json
+
+# Overlay coverage from one LCOV file
+mdlr check --cov target/llvm-cov/lcov.info
+
+# Merge multiple LCOV files (e.g. frontend + backend)
+mdlr check --cov frontend/coverage/lcov.info --cov backend/lcov.info
 ```
 
 ---

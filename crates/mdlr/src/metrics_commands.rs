@@ -58,6 +58,14 @@ fn get_metric_descriptions() -> Vec<(&'static str, &'static str)> {
             "duplication_pct",
             "Percentage of lines in a file that are part of a duplicated code block (copy-paste detection). High values indicate copy-pasted code that should be refactored into shared abstractions.",
         ),
+        (
+            "line_cov",
+            "Per-function line coverage percentage (0-100), computed from an LCOV file passed via `--cov`. Each function's value is the share of its own DA-instrumented lines that ran at least once; lines inside nested units (closures, methods) attribute to the nested unit, not the parent. LOWER values are worse — a function reporting 0 may have no records in the lcov (stale or incomplete coverage run) or may genuinely have no tests.",
+        ),
+        (
+            "uncov_branches",
+            "Per-function count of LCOV BRDA records inside the function's span where `taken == 0` — branches that never fired in the test run. Only emitted when the input lcov contains BRDA records; omitted (with a hazard warning) otherwise. Higher values mean more untested code paths.",
+        ),
     ]
 }
 

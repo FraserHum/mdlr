@@ -63,6 +63,7 @@ fn main() -> Result<()> {
             all,
             filter,
             quiet,
+            cov,
         } => check::handle_check(
             target.as_deref(),
             k,
@@ -72,6 +73,7 @@ fn main() -> Result<()> {
             all,
             filter.as_deref(),
             quiet,
+            &cov,
             root,
         ),
         Command::Metrics { command } => {

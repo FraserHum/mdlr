@@ -1,8 +1,8 @@
 //! JSON output formatting for the CLI.
 
 use mdlr_metrics::{
-    BucketedFanMetrics, BucketedValue, ComplexityMetrics, FileLocMetrics,
-    StructMetrics,
+    BucketedFanMetrics, BucketedValue, ComplexityMetrics, CoverageMetrics,
+    FileLocMetrics, StructMetrics,
 };
 
 /// Build JSON for a bucketed metric value
@@ -87,6 +87,43 @@ pub fn build_struct_json(struct_metrics: &StructMetrics) -> serde_json::Value {
             "distribution": distribution_json(&struct_metrics.lcom.distribution, "lcom4"),
         },
     })
+}
+
+/// Build JSON for coverage metrics. `uncov_branches` is omitted when the
+/// input lcov had no BRDA records.
+pub fn build_coverage_json(cov: &CoverageMetrics) -> serde_json::Value {
+    let line_dist: Vec<_> = cov
+        .line_cov
+        .distribution
+        .iter()
+        .map(|(id, pct)| serde_json::json!({"id": id, "line_cov_pct": pct}))
+        .collect();
+    let mut out = serde_json::json!({
+        "line_cov": {
+            "max": cov.line_cov.max,
+            "mean": cov.line_cov.mean,
+            "p90": cov.line_cov.p90,
+            "distribution": line_dist,
+        },
+        "has_branches": cov.has_branches,
+        "units_analyzed": cov.units_analyzed,
+        "units_without_data": cov.units_without_data,
+    });
+    if cov.has_branches {
+        let br_dist: Vec<_> = cov
+            .uncov_branches
+            .distribution
+            .iter()
+            .map(|(id, n)| serde_json::json!({"id": id, "uncov_branches": n}))
+            .collect();
+        out["uncov_branches"] = serde_json::json!({
+            "max": cov.uncov_branches.max,
+            "mean": cov.uncov_branches.mean,
+            "p90": cov.uncov_branches.p90,
+            "distribution": br_dist,
+        });
+    }
+    out
 }
 
 /// Build JSON for file_loc metrics with distribution

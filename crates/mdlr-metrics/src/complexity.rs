@@ -16,14 +16,30 @@ pub struct ComplexityMetrics {
     pub max_scope: DistributionMetrics,
 }
 
-/// A distribution of usize values with summary statistics
+/// Sort direction for a distribution: which end of the value range is "worse".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortDirection {
+    /// Higher values are worse (e.g. cyclomatic complexity). Worst-first = descending.
+    #[default]
+    Desc,
+    /// Lower values are worse (e.g. line coverage %). Worst-first = ascending.
+    Asc,
+}
+
+/// A distribution of usize values with summary statistics.
+///
+/// `distribution` is sorted worst-first per `sort_direction`, so consumers can
+/// take the first N entries to get the top-N worst symbols regardless of which
+/// end of the range is "bad".
 #[derive(Debug, Clone)]
 pub struct DistributionMetrics {
     pub max: usize,
     pub mean: f64,
     pub p90: usize,
-    /// Entries sorted by value descending
+    /// Entries sorted worst-first per `sort_direction`
     pub distribution: Vec<(String, usize)>,
+    /// Which end of the value range is "worse"
+    pub sort_direction: SortDirection,
 }
 
 #[derive(Debug, Clone)]
@@ -93,9 +109,24 @@ impl ComplexityMetrics {
 }
 
 impl DistributionMetrics {
-    fn from_counts(counts: HashMap<String, usize>) -> Self {
+    /// Build a distribution where higher values are worse (default).
+    pub fn from_counts(counts: HashMap<String, usize>) -> Self {
+        Self::from_counts_with_direction(counts, SortDirection::Desc)
+    }
+
+    /// Build a distribution with an explicit sort direction.
+    pub fn from_counts_with_direction(
+        counts: HashMap<String, usize>,
+        sort_direction: SortDirection,
+    ) -> Self {
         if counts.is_empty() {
-            return Self { max: 0, mean: 0.0, p90: 0, distribution: vec![] };
+            return Self {
+                max: 0,
+                mean: 0.0,
+                p90: 0,
+                distribution: vec![],
+                sort_direction,
+            };
         }
 
         let max = counts.values().copied().max().unwrap_or(0);
@@ -104,13 +135,27 @@ impl DistributionMetrics {
 
         let mut sorted_values: Vec<usize> = counts.values().copied().collect();
         sorted_values.sort();
-        let p90_idx = (sorted_values.len() as f64 * 0.9).ceil() as usize - 1;
+        // `p90` is the boundary cutting off the worst 10% of values, regardless of
+        // direction: for `Desc` (higher = worse) that's the 90th percentile;
+        // for `Asc` (lower = worse) it's the 10th. So the worst-10% threshold
+        // is always reported on the metric's "worse" side of the distribution.
+        let percentile = match sort_direction {
+            SortDirection::Desc => 0.9,
+            SortDirection::Asc => 0.1,
+        };
+        let p90_idx =
+            (sorted_values.len() as f64 * percentile).ceil() as usize - 1;
         let p90 = sorted_values.get(p90_idx).copied().unwrap_or(max);
 
         let mut distribution: Vec<_> = counts.into_iter().collect();
-        distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        match sort_direction {
+            SortDirection::Desc => distribution
+                .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))),
+            SortDirection::Asc => distribution
+                .sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))),
+        }
 
-        Self { max, mean, p90, distribution }
+        Self { max, mean, p90, distribution, sort_direction }
     }
 }
 

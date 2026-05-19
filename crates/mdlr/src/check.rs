@@ -22,8 +22,8 @@ use crate::progress::CheckProgress;
 use crate::timing;
 use mdlr_core::{Graph, Unit, build_with_progress as build_graph};
 use mdlr_metrics::{
-    BucketedMetrics, ComplexityMetrics, FileLocMetrics, StructMetrics,
-    StructuralMetrics, Thresholds,
+    BucketedMetrics, ComplexityMetrics, CoverageMetrics, FileLocMetrics,
+    LcovData, StructMetrics, StructuralMetrics, Thresholds,
     compute_with_hub_thresholds as compute_structural,
 };
 
@@ -49,6 +49,7 @@ struct ComputedMetrics {
     struct_metrics: StructMetrics,
     file_loc: FileLocMetrics,
     duplication: mdlr_cpd::DuplicationMetrics,
+    coverage: Option<CoverageMetrics>,
 }
 
 /// Context for the check command, bundling common resources
@@ -237,6 +238,8 @@ fn compute_all_metrics(
     scope_files: Option<&HashSet<PathBuf>>,
     config: &config::Config,
     progress: &CheckProgress,
+    cov_files: &[PathBuf],
+    repo_root: &Path,
 ) -> ComputedMetrics {
     let unit_count = units.len() as u64;
     let bar = progress.start_bar("Building graph", unit_count);
@@ -275,6 +278,59 @@ fn compute_all_metrics(
     });
     bar.finish();
 
+    let coverage = if cov_files.is_empty() {
+        None
+    } else {
+        let spinner = progress.start_spinner("Loading coverage");
+        let mut lcov = LcovData::new();
+        let mut load_warnings: Vec<String> = Vec::new();
+        for path in cov_files {
+            let resolved = if path.is_absolute() {
+                path.clone()
+            } else {
+                repo_root.join(path)
+            };
+            if let Err(e) = lcov.parse_and_merge(&resolved, repo_root) {
+                load_warnings.push(format!(
+                    "skipped --cov {}: {e}",
+                    resolved.display()
+                ));
+            }
+        }
+        if load_warnings.is_empty() {
+            spinner.finish();
+        } else {
+            spinner.finish_warn("partial");
+        }
+        for w in &load_warnings {
+            progress.warn(w);
+        }
+        let cov =
+            CoverageMetrics::compute(&graph, &lcov, repo_root, scope_files);
+        if cov.units_analyzed > 0
+            && cov.lcov_files_total > 0
+            && cov.lcov_files_matched == 0
+        {
+            progress.warn(&format!(
+                "lcov references {} file(s) but none match any analyzed source — check that SF: paths point at source files mdlr sees (often a sourcemap issue: lcov references built .js while graph holds .ts, or paths are rooted differently than --root)",
+                cov.lcov_files_total
+            ));
+        } else if cov.units_analyzed > 0
+            && cov.units_without_data * 2 >= cov.units_analyzed
+        {
+            progress.warn(&format!(
+                "{}/{} analyzed units had no coverage data — is the lcov file stale or incomplete?",
+                cov.units_without_data, cov.units_analyzed
+            ));
+        }
+        if !cov.has_branches {
+            progress.warn(
+                "lcov has no BRDA records — uncov_branches omitted (re-run coverage with branch instrumentation: c8 --all, coverage run --branch, llvm-cov --branch)",
+            );
+        }
+        Some(cov)
+    };
+
     ComputedMetrics {
         graph,
         structural,
@@ -282,6 +338,7 @@ fn compute_all_metrics(
         struct_metrics,
         file_loc,
         duplication,
+        coverage,
     }
 }
 
@@ -308,6 +365,7 @@ fn format_text_output(
         struct_metrics: &computed.struct_metrics,
         file_loc: &computed.file_loc,
         duplication: &computed.duplication,
+        coverage: computed.coverage.as_ref(),
     };
     let symbol_filter = get_symbol_filter(filter);
     let ignores = store.ignores().load_ignores().unwrap_or_default();
@@ -372,6 +430,19 @@ fn format_json_output(
             .collect::<Vec<_>>(),
     });
 
+    let mut metrics_json = serde_json::json!({
+        "dag_density": build_bucketed_json(&bucketed.dag_density),
+        "fan_in": build_fan_metrics_json(&bucketed.fan_in, &computed.structural.fan_in.distribution),
+        "fan_out": build_fan_metrics_json(&bucketed.fan_out, &computed.structural.fan_out.distribution),
+        "complexity": build_complexity_json(&computed.complexity),
+        "struct": build_struct_json(&computed.struct_metrics),
+        "file_loc": build_file_loc_json(&computed.file_loc),
+        "duplication": duplication_json,
+    });
+    if let Some(cov) = computed.coverage.as_ref() {
+        metrics_json["coverage"] =
+            crate::json_output::build_coverage_json(cov);
+    }
     let output = serde_json::json!({
         "files": {
             "extracted": extracted_count,
@@ -379,15 +450,7 @@ fn format_json_output(
         "units": computed.graph.units.len(),
         "partial_units": partial_count,
         "edges": computed.graph.edges.len(),
-        "metrics": {
-            "dag_density": build_bucketed_json(&bucketed.dag_density),
-            "fan_in": build_fan_metrics_json(&bucketed.fan_in, &computed.structural.fan_in.distribution),
-            "fan_out": build_fan_metrics_json(&bucketed.fan_out, &computed.structural.fan_out.distribution),
-            "complexity": build_complexity_json(&computed.complexity),
-            "struct": build_struct_json(&computed.struct_metrics),
-            "file_loc": build_file_loc_json(&computed.file_loc),
-            "duplication": duplication_json,
-        }
+        "metrics": metrics_json,
     });
     println!("{}", serde_json::to_string_pretty(&output)?);
 
@@ -401,10 +464,18 @@ fn insert_symbol_metric(
     distribution: &[(String, usize)],
     thresholds: &config::MetricThresholds,
     symbol_id: &str,
+    direction: mdlr_metrics::SortDirection,
 ) {
     if let Some((_, value)) = distribution.iter().find(|(n, _)| n == symbol_id)
     {
-        let bucket = thresholds.evaluate(*value as f64);
+        let bucket = match direction {
+            mdlr_metrics::SortDirection::Desc => {
+                thresholds.evaluate(*value as f64)
+            }
+            mdlr_metrics::SortDirection::Asc => {
+                thresholds.evaluate_asc(*value as f64)
+            }
+        };
         metrics.insert(
             name.to_string(),
             serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
@@ -421,54 +492,89 @@ fn build_symbol_json(
     let mut metrics = serde_json::Map::new();
     let t = &config.thresholds;
 
-    let metric_sources: &[(
+    use mdlr_metrics::SortDirection::{Asc, Desc};
+    let mut metric_sources: Vec<(
         &str,
         &[(String, usize)],
         &config::MetricThresholds,
-    )] = &[
-        ("fan_in", &computed.structural.fan_in.distribution, &t.fan_in_max),
-        ("fan_out", &computed.structural.fan_out.distribution, &t.fan_out_max),
+        mdlr_metrics::SortDirection,
+    )> = vec![
+        (
+            "fan_in",
+            &computed.structural.fan_in.distribution,
+            &t.fan_in_max,
+            Desc,
+        ),
+        (
+            "fan_out",
+            &computed.structural.fan_out.distribution,
+            &t.fan_out_max,
+            Desc,
+        ),
         (
             "function_size",
             &computed.complexity.size.distribution,
             &t.function_size,
+            Desc,
         ),
-        ("params", &computed.complexity.params.distribution, &t.params),
+        ("params", &computed.complexity.params.distribution, &t.params, Desc),
         (
             "cyclomatic",
             &computed.complexity.cyclomatic.distribution,
             &t.cyclomatic,
+            Desc,
         ),
         (
             "cognitive",
             &computed.complexity.cognitive.distribution,
             &t.cognitive,
+            Desc,
         ),
         (
             "max_scope",
             &computed.complexity.max_scope.distribution,
             &t.max_scope,
+            Desc,
         ),
         (
             "methods_per_struct",
             &computed.struct_metrics.methods_per_struct.distribution,
             &t.methods_per_struct,
+            Desc,
         ),
-        ("lcom", &computed.struct_metrics.lcom.distribution, &t.lcom),
+        ("lcom", &computed.struct_metrics.lcom.distribution, &t.lcom, Desc),
         (
             "duplication_pct",
             &computed.duplication.distribution,
             &t.duplication_pct,
+            Desc,
         ),
     ];
+    if let Some(cov) = computed.coverage.as_ref() {
+        metric_sources.push((
+            "line_cov",
+            &cov.line_cov.distribution,
+            &t.line_cov,
+            Asc,
+        ));
+        if cov.has_branches {
+            metric_sources.push((
+                "uncov_branches",
+                &cov.uncov_branches.distribution,
+                &t.uncov_branches,
+                Desc,
+            ));
+        }
+    }
 
-    for (name, distribution, thresholds) in metric_sources {
+    for (name, distribution, thresholds, direction) in &metric_sources {
         insert_symbol_metric(
             &mut metrics,
             name,
             distribution,
             thresholds,
             symbol_id,
+            *direction,
         );
     }
 
@@ -568,6 +674,7 @@ fn extract_and_analyze(
     filter: &CheckFilter,
     folder: Option<&Path>,
     progress: &CheckProgress,
+    cov_files: &[PathBuf],
 ) -> Result<(ComputedMetrics, usize)> {
     let root = ctx.store.root();
 
@@ -613,6 +720,8 @@ fn extract_and_analyze(
         scope_files.as_ref(),
         &ctx.config,
         progress,
+        cov_files,
+        ctx.store.root(),
     );
     Ok((computed, entry_count))
 }
@@ -626,6 +735,7 @@ pub fn handle_check(
     all: bool,
     filter_dir: Option<&str>,
     quiet: bool,
+    cov_files: &[PathBuf],
     explicit_root: Option<&Path>,
 ) -> Result<()> {
     let printer = setup_timing(timing);
@@ -663,8 +773,13 @@ pub fn handle_check(
         CheckFilter::Diff(changed)
     };
 
-    let (computed, entry_count) =
-        extract_and_analyze(&ctx, &filter, folder.as_deref(), &progress)?;
+    let (computed, entry_count) = extract_and_analyze(
+        &ctx,
+        &filter,
+        folder.as_deref(),
+        &progress,
+        cov_files,
+    )?;
 
     let result = match format {
         OutputFormat::Text => format_text_output(

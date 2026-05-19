@@ -67,6 +67,20 @@ impl CheckProgress {
         SpinnerHandle { bar, start: Instant::now(), name: name.to_string() }
     }
 
+    /// Print a one-line hazard warning inside the progress area. Stays put
+    /// when the progress bars finish and gets rendered alongside the
+    /// metrics table without garbling other concurrent bars.
+    pub fn warn(&self, message: &str) {
+        if !self.enabled {
+            eprintln!("warning: {message}");
+            return;
+        }
+        let bar = self.multi.add(ProgressBar::new(1));
+        bar.set_style(ProgressStyle::with_template("  {msg}").unwrap());
+        let icon = colored("33", "\u{26a0}");
+        bar.finish_with_message(format!("{icon} {message}"));
+    }
+
     pub fn start_bar(&self, name: &str, total: u64) -> BarHandle {
         if !self.enabled {
             return BarHandle {

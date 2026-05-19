@@ -41,6 +41,9 @@ pub enum Command {
         /// Suppress progress display
         #[arg(short = 'q', long)]
         quiet: bool,
+        /// LCOV coverage file(s) to overlay onto changed files. Repeatable.
+        #[arg(long = "cov", value_name = "PATH")]
+        cov: Vec<PathBuf>,
     },
     /// List supported metrics with descriptions
     Metrics {

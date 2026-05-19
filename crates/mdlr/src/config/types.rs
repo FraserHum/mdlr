@@ -45,7 +45,8 @@ pub struct MetricThresholds {
 }
 
 impl MetricThresholds {
-    /// Evaluate a value against thresholds to get a bucket
+    /// Evaluate a higher-is-worse metric. Field names match the bucket the
+    /// value falls into when below that threshold.
     pub fn evaluate(&self, value: f64) -> Bucket {
         if value < self.excellent {
             Bucket::Excellent
@@ -54,6 +55,23 @@ impl MetricThresholds {
         } else if value < self.fair {
             Bucket::Fair
         } else if value < self.poor {
+            Bucket::Poor
+        } else {
+            Bucket::Critical
+        }
+    }
+
+    /// Evaluate a lower-is-worse metric (e.g. coverage %). Fields name the
+    /// LOW boundary of each bucket; a value at-or-above the field is in
+    /// that bucket or better.
+    pub fn evaluate_asc(&self, value: f64) -> Bucket {
+        if value >= self.excellent {
+            Bucket::Excellent
+        } else if value >= self.good {
+            Bucket::Good
+        } else if value >= self.fair {
+            Bucket::Fair
+        } else if value >= self.poor {
             Bucket::Poor
         } else {
             Bucket::Critical
@@ -105,6 +123,10 @@ pub struct ThresholdsConfig {
     pub max_scope: MetricThresholds,
     #[serde(default = "default_duplication_pct")]
     pub duplication_pct: MetricThresholds,
+    #[serde(default = "default_line_cov")]
+    pub line_cov: MetricThresholds,
+    #[serde(default = "default_uncov_branches")]
+    pub uncov_branches: MetricThresholds,
 }
 
 /// Default threshold values as constants
@@ -177,6 +199,18 @@ mod defaults {
 
     pub const DUPLICATION_PCT: MetricThresholds =
         MetricThresholds { excellent: 3.0, good: 5.0, fair: 10.0, poor: 20.0 };
+
+    // Lower-is-worse: fields are the LOW boundary of each bucket.
+    // value >= excellent (90) → excellent; value < poor (60) → critical.
+    pub const LINE_COV: MetricThresholds = MetricThresholds {
+        excellent: 90.0,
+        good: 80.0,
+        fair: 70.0,
+        poor: 60.0,
+    };
+
+    pub const UNCOV_BRANCHES: MetricThresholds =
+        MetricThresholds { excellent: 1.0, good: 3.0, fair: 6.0, poor: 10.0 };
 }
 
 // Serde default functions (required for partial deserialization)
@@ -222,6 +256,12 @@ fn default_max_scope() -> MetricThresholds {
 fn default_duplication_pct() -> MetricThresholds {
     defaults::DUPLICATION_PCT
 }
+fn default_line_cov() -> MetricThresholds {
+    defaults::LINE_COV
+}
+fn default_uncov_branches() -> MetricThresholds {
+    defaults::UNCOV_BRANCHES
+}
 
 impl Default for ThresholdsConfig {
     fn default() -> Self {
@@ -240,6 +280,8 @@ impl Default for ThresholdsConfig {
             file_loc: defaults::FILE_LOC,
             max_scope: defaults::MAX_SCOPE,
             duplication_pct: defaults::DUPLICATION_PCT,
+            line_cov: defaults::LINE_COV,
+            uncov_branches: defaults::UNCOV_BRANCHES,
         }
     }
 }
@@ -260,6 +302,8 @@ impl ThresholdsConfig {
             "file_loc" => Some(&self.file_loc),
             "max_scope" => Some(&self.max_scope),
             "duplication_pct" => Some(&self.duplication_pct),
+            "line_cov" => Some(&self.line_cov),
+            "uncov_branches" => Some(&self.uncov_branches),
             _ => None,
         }
     }

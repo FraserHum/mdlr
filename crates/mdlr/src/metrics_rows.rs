@@ -4,8 +4,8 @@ use crate::cache::Ignores;
 use crate::config::{Bucket, Config, MetricThresholds};
 use mdlr_cpd::DuplicationMetrics;
 use mdlr_metrics::{
-    ComplexityMetrics, FileLocMetrics, HubInfo, StructMetrics,
-    StructuralMetrics,
+    ComplexityMetrics, CoverageMetrics, FileLocMetrics, HubInfo,
+    SortDirection, StructMetrics, StructuralMetrics,
 };
 use std::collections::HashMap;
 
@@ -45,26 +45,55 @@ pub struct MetricsBundle<'a> {
     pub struct_metrics: &'a StructMetrics,
     pub file_loc: &'a FileLocMetrics,
     pub duplication: &'a DuplicationMetrics,
+    /// Present iff the user passed `--cov`.
+    pub coverage: Option<&'a CoverageMetrics>,
 }
 
-/// Specification for collecting an integer metric
+/// Specification for collecting an integer metric.
+///
+/// `direction` controls both the threshold evaluation (which end of the
+/// range is "worse") and which side of `boring_threshold` to keep:
+/// - `Desc`: keep entries with `value > boring_threshold` (boring = small).
+/// - `Asc`:  keep entries with `value < boring_threshold` (boring = large).
 struct IntMetricSpec<'a> {
     name: &'static str,
     distribution: &'a [(String, usize)],
     thresholds: &'a MetricThresholds,
-    min_value: usize,
+    boring_threshold: usize,
+    direction: SortDirection,
 }
 
 impl IntMetricSpec<'_> {
+    fn is_interesting(&self, value: usize) -> bool {
+        match self.direction {
+            SortDirection::Desc => value > self.boring_threshold,
+            SortDirection::Asc => value < self.boring_threshold,
+        }
+    }
+
+    fn bucket_for(&self, value: usize) -> Bucket {
+        match self.direction {
+            SortDirection::Desc => self.thresholds.evaluate(value as f64),
+            SortDirection::Asc => self.thresholds.evaluate_asc(value as f64),
+        }
+    }
+
+    fn format_value(&self, value: usize) -> String {
+        match self.name {
+            "line_cov" => format!("{value}%"),
+            _ => value.to_string(),
+        }
+    }
+
     /// Collect all entries (for global sorting mode)
     fn collect_all(&self, rows: &mut Vec<ScoredRow>) {
         for (name, value) in self.distribution {
-            if *value > self.min_value {
-                let bucket = self.thresholds.evaluate(*value as f64);
+            if self.is_interesting(*value) {
+                let bucket = self.bucket_for(*value);
                 rows.push(ScoredRow {
                     metric_name: self.name.to_string(),
                     symbol: name.clone(),
-                    value: value.to_string(),
+                    value: self.format_value(*value),
                     bucket,
                 });
             }
@@ -78,12 +107,12 @@ impl IntMetricSpec<'_> {
         symbol_filter: &str,
     ) {
         for (name, value) in self.distribution.iter() {
-            if name == symbol_filter && *value > self.min_value {
-                let bucket = self.thresholds.evaluate(*value as f64);
+            if name == symbol_filter && self.is_interesting(*value) {
+                let bucket = self.bucket_for(*value);
                 rows.push((
                     self.name.to_string(),
                     name.clone(),
-                    value.to_string(),
+                    self.format_value(*value),
                     bucket.to_string(),
                 ));
             }
@@ -192,66 +221,96 @@ struct MetricSpecs<'a> {
 impl<'a> MetricSpecs<'a> {
     fn new(m: &'a MetricsBundle, config: &'a Config) -> Self {
         let t = &config.thresholds;
+        let mut int_specs = vec![
+            IntMetricSpec {
+                name: "fan_out",
+                distribution: &m.structural.fan_out.distribution,
+                thresholds: &t.fan_out_max,
+                boring_threshold: 0,
+                direction: SortDirection::Desc,
+            },
+            IntMetricSpec {
+                name: "function_size",
+                distribution: &m.complexity.size.distribution,
+                thresholds: &t.function_size,
+                boring_threshold: 1,
+                direction: SortDirection::Desc,
+            },
+            IntMetricSpec {
+                name: "params",
+                distribution: &m.complexity.params.distribution,
+                thresholds: &t.params,
+                boring_threshold: 0,
+                direction: SortDirection::Desc,
+            },
+            IntMetricSpec {
+                name: "cyclomatic",
+                distribution: &m.complexity.cyclomatic.distribution,
+                thresholds: &t.cyclomatic,
+                boring_threshold: 1,
+                direction: SortDirection::Desc,
+            },
+            IntMetricSpec {
+                name: "cognitive",
+                distribution: &m.complexity.cognitive.distribution,
+                thresholds: &t.cognitive,
+                boring_threshold: 1,
+                direction: SortDirection::Desc,
+            },
+            IntMetricSpec {
+                name: "max_scope",
+                distribution: &m.complexity.max_scope.distribution,
+                thresholds: &t.max_scope,
+                boring_threshold: 0,
+                direction: SortDirection::Desc,
+            },
+            IntMetricSpec {
+                name: "methods_per_struct",
+                distribution: &m
+                    .struct_metrics
+                    .methods_per_struct
+                    .distribution,
+                thresholds: &t.methods_per_struct,
+                boring_threshold: 0,
+                direction: SortDirection::Desc,
+            },
+            IntMetricSpec {
+                name: "file_loc",
+                distribution: &m.file_loc.distribution,
+                thresholds: &t.file_loc,
+                boring_threshold: 0,
+                direction: SortDirection::Desc,
+            },
+            IntMetricSpec {
+                name: "duplication_pct",
+                distribution: &m.duplication.distribution,
+                thresholds: &t.duplication_pct,
+                boring_threshold: 0,
+                direction: SortDirection::Desc,
+            },
+        ];
+        if let Some(cov) = m.coverage {
+            // Skip 100% covered. Use 101 so a Unit at exactly 100% drops out
+            // but everything below stays in.
+            int_specs.push(IntMetricSpec {
+                name: "line_cov",
+                distribution: &cov.line_cov.distribution,
+                thresholds: &t.line_cov,
+                boring_threshold: 100,
+                direction: SortDirection::Asc,
+            });
+            if cov.has_branches {
+                int_specs.push(IntMetricSpec {
+                    name: "uncov_branches",
+                    distribution: &cov.uncov_branches.distribution,
+                    thresholds: &t.uncov_branches,
+                    boring_threshold: 0,
+                    direction: SortDirection::Desc,
+                });
+            }
+        }
         MetricSpecs {
-            int_specs: vec![
-                IntMetricSpec {
-                    name: "fan_out",
-                    distribution: &m.structural.fan_out.distribution,
-                    thresholds: &t.fan_out_max,
-                    min_value: 0,
-                },
-                IntMetricSpec {
-                    name: "function_size",
-                    distribution: &m.complexity.size.distribution,
-                    thresholds: &t.function_size,
-                    min_value: 1,
-                },
-                IntMetricSpec {
-                    name: "params",
-                    distribution: &m.complexity.params.distribution,
-                    thresholds: &t.params,
-                    min_value: 0,
-                },
-                IntMetricSpec {
-                    name: "cyclomatic",
-                    distribution: &m.complexity.cyclomatic.distribution,
-                    thresholds: &t.cyclomatic,
-                    min_value: 1,
-                },
-                IntMetricSpec {
-                    name: "cognitive",
-                    distribution: &m.complexity.cognitive.distribution,
-                    thresholds: &t.cognitive,
-                    min_value: 1,
-                },
-                IntMetricSpec {
-                    name: "max_scope",
-                    distribution: &m.complexity.max_scope.distribution,
-                    thresholds: &t.max_scope,
-                    min_value: 0,
-                },
-                IntMetricSpec {
-                    name: "methods_per_struct",
-                    distribution: &m
-                        .struct_metrics
-                        .methods_per_struct
-                        .distribution,
-                    thresholds: &t.methods_per_struct,
-                    min_value: 0,
-                },
-                IntMetricSpec {
-                    name: "file_loc",
-                    distribution: &m.file_loc.distribution,
-                    thresholds: &t.file_loc,
-                    min_value: 0,
-                },
-                IntMetricSpec {
-                    name: "duplication_pct",
-                    distribution: &m.duplication.distribution,
-                    thresholds: &t.duplication_pct,
-                    min_value: 0,
-                },
-            ],
+            int_specs,
             fan_in_spec: HubFilteredFanInSpec {
                 distribution: &m.structural.fan_in.distribution,
                 thresholds: &t.fan_in_max,
@@ -261,7 +320,8 @@ impl<'a> MetricSpecs<'a> {
                 name: "lcom",
                 distribution: &m.struct_metrics.lcom.distribution,
                 thresholds: &t.lcom,
-                min_value: 0,
+                boring_threshold: 0,
+                direction: SortDirection::Desc,
             },
             float_specs: vec![],
         }
@@ -307,6 +367,8 @@ const METRIC_ORDER: &[&str] = &[
     "file_loc",
     "duplication_pct",
     "lcom",
+    "line_cov",
+    "uncov_branches",
 ];
 
 /// Sort scored rows by severity, apply limit, then group by metric in canonical order.

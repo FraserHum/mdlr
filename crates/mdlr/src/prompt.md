@@ -31,6 +31,12 @@ mdlr check -k 10
 # Pretty print as aligned table
 mdlr check --pretty
 
+# Overlay test coverage from an LCOV file (adds line_cov + uncov_branches metrics)
+mdlr check --cov target/llvm-cov/lcov.info
+
+# Merge multiple LCOV files (e.g. frontend + backend monorepo)
+mdlr check --cov frontend/lcov.info --cov backend/lcov.info
+
 # List available metrics and their meanings
 mdlr metrics ls
 
@@ -48,6 +54,8 @@ mdlr metrics get cyclomatic
 - **cognitive**: Nesting-aware complexity. High = hard to understand (penalizes deep nesting)
 - **lcom**: Lack of cohesion. High = struct should be split
 - **methods_per_struct**: Methods in a struct. High = too many responsibilities
+- **line_cov** (only with `--cov`): Per-function test coverage %. LOW = untested (lower is worse)
+- **uncov_branches** (only with `--cov` + BRDA): Per-function untaken branches. High = unexercised code paths
 
 ## Steps
 
