@@ -1,4 +1,4 @@
-# mdlr
+# Modular (`mdlr`)
 
 `mdlr` is a feedback tool that helps coding agents write less slop. Over many edit cylces, agents tend to write code that is incoherent, difficult to read, and bloated with
 tests that are tautological or mock out the actual functionality that needs to be tested.
