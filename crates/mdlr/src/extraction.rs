@@ -5,6 +5,33 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::{CacheStore, FileCacheEntry};
 
+/// A language mdlr can extract Units from, identified by the file extensions
+/// it owns. One `const` per language (see [`LANGUAGES`]).
+pub struct Language {
+    pub extensions: &'static [&'static str],
+}
+
+const RUST: Language = Language { extensions: &["rs"] };
+const TYPESCRIPT: Language =
+    Language { extensions: &["ts", "tsx", "js", "jsx"] };
+const GO: Language = Language { extensions: &["go"] };
+const PYTHON: Language = Language { extensions: &["py", "pyi"] };
+
+/// The single source of truth for which file extensions mdlr can extract.
+/// Go is listed here too even though it's a subprocess binary (not a linked
+/// crate), so the registry stays uniform across languages.
+pub const LANGUAGES: &[&Language] = &[&RUST, &TYPESCRIPT, &GO, &PYTHON];
+
+/// Whether `ext` (without leading dot) belongs to a supported language.
+pub fn is_source_extension(ext: &str) -> bool {
+    LANGUAGES.iter().any(|l| l.extensions.contains(&ext))
+}
+
+/// Whether `path` is a source file mdlr can extract from, by its extension.
+pub fn is_source_path(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(is_source_extension)
+}
+
 // SAFETY justification for `unsafe { env::set_var(...) }` below: the rust
 // extractor's `MDLR_QUIET_DIAGNOSTICS` is read at extractor entry, before any
 // background thread the rust-analyzer libs spawn could observe a partial
@@ -82,7 +109,7 @@ pub fn has_ts_files(root: &Path) -> bool {
         ignore::WalkBuilder::new(root).hidden(true).max_depth(Some(3)).build();
     for entry in walker.flatten() {
         if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
-            if matches!(ext, "ts" | "tsx" | "js" | "jsx") {
+            if TYPESCRIPT.extensions.contains(&ext) {
                 return true;
             }
         }
@@ -178,7 +205,7 @@ pub fn has_python_project(root: &Path) -> bool {
         ignore::WalkBuilder::new(root).hidden(true).max_depth(Some(3)).build();
     for entry in walker.flatten() {
         if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
-            if matches!(ext, "py" | "pyi") {
+            if PYTHON.extensions.contains(&ext) {
                 return true;
             }
         }

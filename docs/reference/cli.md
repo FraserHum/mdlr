@@ -28,14 +28,15 @@ mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A] [-f <dir>] 
 | `-q, --quiet` | false | Suppress progress display (progress is shown by default when stderr is a TTY) |
 | `--cov <PATH>` | - | LCOV coverage file to overlay onto changed files. Repeatable: pass `--cov` once per file and they are merged. Adds two metrics: `line_cov` (per-function %) and `uncov_branches` (per-function untaken-branch count, only when the lcov has BRDA records). See [line coverage](../metrics/line-coverage.md) and [uncovered branches](../metrics/uncov-branches.md). |
 
-By default, `check` uses **diff mode** on branches (only analyzing files changed since main/master) and analyzes all files when on main/master. Use `-A` to force analyzing all files when on a branch. Use `-f` to scope metrics to a specific directory — this works in both diff and all modes.
+By default, `check` uses **diff mode** on branches (only analyzing files changed since main/master). On main/master there's no branch diff, so `check` analyzes all files — unless the working tree has uncommitted source changes, in which case it scopes to those changed files (doc-only edits like README don't trigger this). Use `-A` to force analyzing all files. Use `-f` to scope metrics to a specific directory — this works in both diff and all modes.
 
 Running `check` extracts all files and writes results to the cache.
 
 **Examples:**
 
 ```bash
-# Analyze (diff mode on branches, all files on main/master)
+# Analyze (diff mode on branches; all files on main/master, or just
+# uncommitted source changes if the working tree is dirty)
 mdlr check
 
 # Force all files even when on a branch

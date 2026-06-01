@@ -7,7 +7,8 @@ Use mdlr to identify and improve modularity issues in the codebase.
 ### Quick Start
 
 ```bash
-# Analyze codebase (diff mode on branches, all files on main/master)
+# Analyze codebase (diff mode on branches; all files on main/master,
+# or just uncommitted source changes if the working tree is dirty)
 mdlr check
 
 # Force all files even when on a branch

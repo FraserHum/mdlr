@@ -32,7 +32,7 @@ pub enum Command {
         /// Show timing breakdown for each phase
         #[arg(long)]
         timing: bool,
-        /// Analyze all files even when on a branch (default: diff mode on branches, all on main/master)
+        /// Analyze all files even when on a branch (default: diff mode on branches; on main/master, all files unless the working tree has uncommitted source changes)
         #[arg(short = 'A', long)]
         all: bool,
         /// Scope analysis to a specific directory (combines with diff/all mode)

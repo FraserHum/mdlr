@@ -838,9 +838,15 @@ pub fn handle_check(
         // Explicit target or --all flag: skip diff mode
         parse_check_filter(target, &ctx.cwd)
     } else if is_on_base_branch(ctx.store.root()) {
-        // On main/master: only check staged + unstaged changes against HEAD
+        // On main/master there's no branch diff. If the working tree has
+        // uncommitted *source* changes, scope to those; otherwise (clean tree,
+        // or doc-only edits) analyze the whole project.
         let changed = diff_files_head(ctx.store.root())?;
-        CheckFilter::Diff(changed)
+        if changed.iter().any(|p| crate::extraction::is_source_path(p)) {
+            CheckFilter::Diff(changed)
+        } else {
+            CheckFilter::None
+        }
     } else {
         // On a branch: diff mode by default
         let changed = diff_files(ctx.store.root())?;
