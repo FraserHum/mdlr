@@ -11,6 +11,7 @@ mod ignore_commands;
 mod json_output;
 mod metrics_commands;
 mod metrics_rows;
+mod path_scope;
 mod progress;
 mod symbol_commands;
 mod timing;

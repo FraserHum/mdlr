@@ -18,6 +18,7 @@ use crate::json_output::{
     build_file_loc_json, build_struct_json,
 };
 use crate::metrics_rows::{MetricsBundle, collect_metric_rows};
+use crate::path_scope::PathScope;
 use crate::progress::CheckProgress;
 use crate::timing;
 use mdlr_core::{Graph, Unit, build_with_progress as build_graph};
@@ -31,10 +32,8 @@ use mdlr_metrics::{
 enum CheckFilter {
     /// No filter - analyze entire project
     None,
-    /// Filter by file path
-    File(PathBuf),
-    /// Filter by directory path
-    Directory(PathBuf),
+    /// Filter by a file or directory path
+    Path(PathScope),
     /// Filter by symbol ID
     Symbol(String),
     /// Filter by git diff — only files changed on the current branch
@@ -79,25 +78,14 @@ impl CheckContext {
 
 /// Parse target string into a CheckFilter
 fn parse_check_filter(target: Option<&str>, cwd: &Path) -> CheckFilter {
-    if let Some(target_str) = target {
-        let target_path = if Path::new(target_str).is_absolute() {
-            Path::new(target_str).to_path_buf()
-        } else {
-            cwd.join(target_str)
-        };
-
-        if target_path.exists() {
-            let canonical = target_path.canonicalize().unwrap_or(target_path);
-            if canonical.is_file() {
-                CheckFilter::File(canonical)
-            } else {
-                CheckFilter::Directory(canonical)
+    match target {
+        Some(target_str) => {
+            match PathScope::classify(Path::new(target_str), cwd) {
+                Some(scope) => CheckFilter::Path(scope),
+                None => CheckFilter::Symbol(target_str.to_string()),
             }
-        } else {
-            CheckFilter::Symbol(target_str.to_string())
         }
-    } else {
-        CheckFilter::None
+        None => CheckFilter::None,
     }
 }
 
@@ -109,10 +97,7 @@ fn passes_path_filter(
     folder: Option<&Path>,
 ) -> bool {
     let passes_mode = match filter {
-        CheckFilter::File(filter_path) => file_path == *filter_path,
-        CheckFilter::Directory(filter_path) => {
-            file_path.starts_with(filter_path)
-        }
+        CheckFilter::Path(scope) => scope.matches(file_path),
         CheckFilter::Diff(changed) => {
             file_path.canonicalize().map_or(false, |p| changed.contains(&p))
         }

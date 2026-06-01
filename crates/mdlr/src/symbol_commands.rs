@@ -1,24 +1,32 @@
 //! Symbol listing and retrieval command handlers.
 
 use anyhow::{Result, bail};
+use std::env;
 use std::fs;
 use std::path::Path;
 
 use crate::cache::CacheStore;
 use crate::cli::OutputFormat;
 use crate::find_project_root;
+use crate::path_scope::PathScope;
 use crate::walk::SourceWalker;
 use mdlr_core::{Unit, UnitKind};
 
-/// Collect all units, optionally filtered by kind.
+/// Collect all units, optionally filtered by kind and restricted to `scope`.
 fn collect_units(
     store: &CacheStore,
     kind_filter: Option<UnitKind>,
+    scope: Option<&PathScope>,
 ) -> Result<Vec<Unit>> {
     let walker = SourceWalker::new(store.root());
     let mut all_units = Vec::new();
 
     for file_path in walker.walk() {
+        if let Some(scope) = scope {
+            if !scope.matches(&file_path) {
+                continue;
+            }
+        }
         if let Ok(Some(entry)) = store.load_entry(&file_path) {
             for unit in entry.units {
                 if let Some(ref filter) = kind_filter {
@@ -44,7 +52,14 @@ pub fn handle_ls(
     let root = find_project_root(path, explicit_root);
     let store = CacheStore::open(&root)?;
     let kind_filter = kind_filter.map(|k| parse_unit_kind(&k)).transpose()?;
-    let all_units = collect_units(&store, kind_filter)?;
+
+    let cwd = env::current_dir()?;
+    let scope = match PathScope::classify(path, &cwd) {
+        Some(scope) => scope,
+        None => bail!("Path '{}' does not exist", path.display()),
+    };
+
+    let all_units = collect_units(&store, kind_filter, Some(&scope))?;
 
     match format {
         OutputFormat::Text => print_ls_text(&all_units),
@@ -188,5 +203,78 @@ fn truncate(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", &s[..max_len - 3])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Create a source file and its corresponding cache entry holding one
+    /// function unit, so the walker finds the file and `load_entry` succeeds.
+    fn seed_unit(store: &CacheStore, rel: &str) {
+        let source = store.root().join(rel);
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, "fn placeholder() {}\n").unwrap();
+
+        let entry = serde_json::json!({
+            "source_path": rel,
+            "units": [{
+                "id": format!("{}::placeholder", rel),
+                "kind": "Function",
+                "file": rel,
+                "span": {"start_line": 1, "start_col": 0, "end_line": 1, "end_col": 0},
+                "reads": [], "writes": [], "calls": [], "tags": []
+            }],
+            "cached_at": 0
+        });
+
+        let cache_path = store.cache_path(&source);
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(&cache_path, serde_json::to_string(&entry).unwrap())
+            .unwrap();
+    }
+
+    fn ids(units: &[Unit]) -> Vec<String> {
+        let mut ids: Vec<String> =
+            units.iter().map(|u| u.id.clone()).collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn collect_units_scoped_to_directory() {
+        let temp = TempDir::new().unwrap();
+        let store = CacheStore::open(temp.path()).unwrap();
+        seed_unit(&store, "src/a.rs");
+        seed_unit(&store, "src/b.rs");
+        seed_unit(&store, "lib/c.rs");
+
+        // Reproduces issue #1: without scoping, every unit is returned.
+        let all = collect_units(&store, None, None).unwrap();
+        assert_eq!(all.len(), 3);
+
+        let scope =
+            PathScope::classify(Path::new("src"), store.root()).unwrap();
+        let scoped = collect_units(&store, None, Some(&scope)).unwrap();
+        assert_eq!(
+            ids(&scoped),
+            vec!["src/a.rs::placeholder", "src/b.rs::placeholder"]
+        );
+    }
+
+    #[test]
+    fn collect_units_scoped_to_file() {
+        let temp = TempDir::new().unwrap();
+        let store = CacheStore::open(temp.path()).unwrap();
+        seed_unit(&store, "src/a.rs");
+        seed_unit(&store, "src/b.rs");
+
+        let scope =
+            PathScope::classify(Path::new("src/a.rs"), store.root()).unwrap();
+        let scoped = collect_units(&store, None, Some(&scope)).unwrap();
+        assert_eq!(ids(&scoped), vec!["src/a.rs::placeholder"]);
     }
 }
