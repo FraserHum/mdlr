@@ -134,7 +134,18 @@ thresholds:
     poor: 40
 ```
 
-Each field is the upper bound of its bucket — a value below `excellent` is "excellent", at or above `poor` is "critical". Lower-is-worse metrics like `line_cov` invert this (the field is the *low* boundary of each bucket). See [Configuration](reference/config.md) for the full schema covering every metric, display modes, and hub/CPD knobs.
+Each field is the upper bound of its bucket — a value below `excellent` is "excellent", at or above `poor` is "critical". Lower-is-worse metrics like `line_cov` invert this (the field is the *low* boundary of each bucket).
+
+Metrics can be turned off via a top level `disabled_metrics` stanza.
+
+```yaml
+disabled_metrics:
+  - lcom
+  - duplication_pct
+  - uncov_branches
+```
+
+Use the canonical names from `mdlr metrics ls`. See [Configuration](reference/config.md) for the full schema covering every metric, display modes, and hub/CPD knobs.
 
 ## Documentation
 
