@@ -94,5 +94,13 @@ cat dist/homebrew/Casks/mdlr.rb  # inspect the generated cask
 - **macOS "killed: 9" on Apple Silicon** — a darwin binary wasn't ad-hoc signed.
   The `codesign --sign -` post-build hook in `.goreleaser.yaml` handles this;
   confirm it ran (it is a no-op on Linux targets).
+- **macOS "Apple could not verify ... may be malware"** — this is Gatekeeper, not
+  the signing issue above. Ad-hoc signing is **not** Apple notarization, so a
+  downloaded (quarantined) binary is still blocked. The cask's post-install hook
+  strips the `com.apple.quarantine` xattr, so `brew install` users are fine. If
+  you run a **raw release tarball** directly, clear it yourself:
+  `xattr -dr com.apple.quarantine ./mdlr ./mdlr-extract-go`. The only way to drop
+  the prompt entirely (including raw tarballs) is to notarize with a paid Apple
+  Developer account.
 - **Cask push rejected** — `gh auth token` lacks `repo` scope, or you are not
   a collaborator on `thempatel/homebrew-tap`. Check `gh auth status`.

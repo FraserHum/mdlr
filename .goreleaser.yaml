@@ -34,8 +34,10 @@ builds:
     hooks:
       post:
         # zig does not sign Mach-O binaries, and macOS SIGKILLs unsigned arm64
-        # binaries. Ad-hoc sign both darwin outputs. Homebrew strips the cask
-        # download quarantine, so ad-hoc (no Apple account) is sufficient.
+        # binaries. Ad-hoc sign both darwin outputs so they can execute at all.
+        # NOTE: ad-hoc signing is NOT notarization — Gatekeeper still blocks the
+        # quarantined download ("could not verify ... malware"). The cask's
+        # post-install hook below strips the quarantine xattr to get past that.
         - cmd: codesign --sign - --force --timestamp=none "{{ .Path }}"
 
   - id: mdlr-linux
@@ -113,6 +115,17 @@ homebrew_casks:
     homepage: "https://github.com/thempatel/mdlr"
     description: "Polyglot code-analysis tool that builds a graph of source-level units and computes structural metrics"
     license: "MIT"
+    # The binaries are ad-hoc signed, not Apple-notarized, so Gatekeeper otherwise
+    # blocks them with "Apple could not verify ... may be malware". Strip the
+    # download quarantine attribute on install. (Raw-tarball users, who don't go
+    # through brew, still need to run `xattr -dr com.apple.quarantine` themselves.)
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/mdlr"]
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/mdlr-extract-go"]
+          end
 
 checksum:
   name_template: "checksums.txt"
