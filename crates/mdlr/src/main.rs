@@ -7,6 +7,7 @@ mod check;
 mod check_output;
 mod cli;
 mod config;
+mod display_scope;
 mod extraction;
 mod git_diff;
 mod ignore_commands;

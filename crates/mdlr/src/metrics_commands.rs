@@ -56,7 +56,7 @@ fn get_metric_descriptions() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "duplication_pct",
-            "Percentage of lines in a file that are part of a duplicated code block (copy-paste detection). High values indicate copy-pasted code that should be refactored into shared abstractions.",
+            "Percentage of a unit's lines that are part of a duplicated code block (copy-paste detection). Duplicated lines attribute to the innermost unit containing them; duplicated lines outside any unit (e.g. import blocks) are ignored. High values indicate copy-pasted code that should be refactored into shared abstractions.",
         ),
         (
             "line_cov",

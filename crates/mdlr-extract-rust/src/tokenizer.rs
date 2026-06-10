@@ -270,8 +270,24 @@ fn handle_payments(payments: &[Payment]) -> Vec<PaymentResult> {
             "should detect copy-pasted Rust function with renamed variables"
         );
 
-        let metrics = mdlr_cpd::compute_duplication(&clones, &[a, b], None);
+        let units = whole_file_units(&[&a, &b]);
+        let metrics = mdlr_cpd::compute_duplication(&clones, &units);
         assert!(metrics.max > 50.0, "both files should show high duplication");
+    }
+
+    /// One unit spanning each whole file, for attribution in tests.
+    fn whole_file_units(
+        files: &[&mdlr_cpd::FileTokens],
+    ) -> Vec<mdlr_cpd::UnitSpan> {
+        files
+            .iter()
+            .map(|f| mdlr_cpd::UnitSpan {
+                id: format!("{}::all", f.source_path.display()),
+                file: f.source_path.clone(),
+                start_line: 1,
+                end_line: f.tokens.last().map(|t| t.line).unwrap_or(1),
+            })
+            .collect()
     }
 
     /// Completely different Rust code — a web handler vs a sorting algo.
@@ -500,20 +516,15 @@ pub const MAX_RETRIES: u32 = 5;
         );
 
         let all = vec![a, b, c];
+        let units = whole_file_units(&[&all[0], &all[1], &all[2]]);
         let clones = mdlr_cpd::find_clones(&all, 20);
-        let metrics = mdlr_cpd::compute_duplication(&clones, &all, None);
+        let metrics = mdlr_cpd::compute_duplication(&clones, &units);
 
         assert!(metrics.clone_count > 0, "should detect clones");
 
-        let config_file = metrics
-            .files
-            .iter()
-            .find(|f| f.file.to_string_lossy().contains("config"));
-        if let Some(cf) = config_file {
-            assert_eq!(
-                cf.duplicated_lines, 0,
-                "config file should have 0 duplicated lines"
-            );
-        }
+        assert!(
+            !metrics.distribution.iter().any(|(id, _)| id.contains("config")),
+            "config file should have 0 duplicated lines"
+        );
     }
 }
