@@ -270,7 +270,9 @@ fn handle_payments(payments: &[Payment]) -> Vec<PaymentResult> {
             "should detect copy-pasted Rust function with renamed variables"
         );
 
-        let metrics = mdlr_cpd::compute_duplication(&clones, &[a, b], None);
+        let units: Vec<_> =
+            [&a, &b].map(mdlr_cpd::UnitSpan::whole_file).into();
+        let metrics = mdlr_cpd::compute_duplication(&clones, &units);
         assert!(metrics.max > 50.0, "both files should show high duplication");
     }
 
@@ -500,20 +502,16 @@ pub const MAX_RETRIES: u32 = 5;
         );
 
         let all = vec![a, b, c];
+        let units: Vec<_> =
+            all.iter().map(mdlr_cpd::UnitSpan::whole_file).collect();
         let clones = mdlr_cpd::find_clones(&all, 20);
-        let metrics = mdlr_cpd::compute_duplication(&clones, &all, None);
+        let metrics = mdlr_cpd::compute_duplication(&clones, &units);
 
         assert!(metrics.clone_count > 0, "should detect clones");
 
-        let config_file = metrics
-            .files
-            .iter()
-            .find(|f| f.file.to_string_lossy().contains("config"));
-        if let Some(cf) = config_file {
-            assert_eq!(
-                cf.duplicated_lines, 0,
-                "config file should have 0 duplicated lines"
-            );
-        }
+        assert!(
+            !metrics.distribution.iter().any(|(id, _)| id.contains("config")),
+            "config file should have 0 duplicated lines"
+        );
     }
 }

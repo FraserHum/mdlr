@@ -1,6 +1,7 @@
 use mdlr_cpd::tokens::{NORMALIZED_ID, NORMALIZED_LIT, Token};
-use mdlr_cpd::{self, FileTokens, binary, compute_duplication, find_clones};
-use std::collections::HashSet;
+use mdlr_cpd::{
+    self, FileTokens, UnitSpan, binary, compute_duplication, find_clones,
+};
 use std::path::PathBuf;
 
 /// Helper: create FileTokens with tokens on sequential lines.
@@ -91,19 +92,19 @@ fn test_end_to_end_metrics_computation() {
     let file_b = make_file("src/b.rs", &tokens);
 
     let files = vec![file_a, file_b];
+    let units: Vec<UnitSpan> =
+        files.iter().map(UnitSpan::whole_file).collect();
     let clones = find_clones(&files, 50);
-    let metrics = compute_duplication(&clones, &files, None);
+    let metrics = compute_duplication(&clones, &units);
 
     assert!(metrics.clone_count > 0);
     assert!(metrics.max > 0.0);
-    assert!(!metrics.files.is_empty());
-    // Both files should show high duplication
-    for f in &metrics.files {
+    assert!(!metrics.distribution.is_empty());
+    // Both units should show high duplication
+    for (id, pct) in &metrics.distribution {
         assert!(
-            f.percentage > 50.0,
-            "file {} should show >50% duplication, got {}",
-            f.file.display(),
-            f.percentage
+            *pct > 50,
+            "unit {id} should show >50% duplication, got {pct}"
         );
     }
 }
@@ -271,34 +272,28 @@ fn test_clone_extends_maximally() {
     );
 }
 
-// === Scope filtering ===
+// === Unit attribution ===
 
 #[test]
-fn test_scope_filtering_either_side() {
+fn test_attribution_covers_both_clone_sides() {
     let tokens = rust_function_tokens(80);
     let files = vec![
         make_file("src/changed.rs", &tokens),
         make_file("src/unchanged.rs", &tokens),
     ];
+    let units: Vec<UnitSpan> =
+        files.iter().map(UnitSpan::whole_file).collect();
 
     let clones = find_clones(&files, 50);
     assert!(!clones.is_empty());
 
-    // Scope to only changed.rs — clone should still be reported
-    let scope: HashSet<PathBuf> = [PathBuf::from("src/changed.rs")].into();
-    let metrics = compute_duplication(&clones, &files, Some(&scope));
-    assert!(
-        metrics.clone_count > 0,
-        "clone should be reported when either side is in scope"
-    );
-
-    // Only changed.rs should appear in file metrics
-    assert_eq!(metrics.files.len(), 1);
-    assert_eq!(metrics.files[0].file, PathBuf::from("src/changed.rs"));
+    let metrics = compute_duplication(&clones, &units);
+    // Both sides of the clone have a unit, so both get a row.
+    assert_eq!(metrics.distribution.len(), 2);
 }
 
 #[test]
-fn test_scope_filtering_neither_side() {
+fn test_clones_outside_any_unit_drop() {
     let tokens = rust_function_tokens(80);
     let files =
         vec![make_file("src/a.rs", &tokens), make_file("src/b.rs", &tokens)];
@@ -306,10 +301,15 @@ fn test_scope_filtering_neither_side() {
     let clones = find_clones(&files, 50);
     assert!(!clones.is_empty());
 
-    // Scope to unrelated file — no clones should be reported
-    let scope: HashSet<PathBuf> = [PathBuf::from("src/unrelated.rs")].into();
-    let metrics = compute_duplication(&clones, &files, Some(&scope));
-    assert_eq!(metrics.clone_count, 0);
+    // Only a unit in an unrelated file — clone lines attribute to nothing.
+    let units = vec![UnitSpan {
+        id: "src/unrelated.rs::f".to_string(),
+        file: PathBuf::from("src/unrelated.rs"),
+        start_line: 1,
+        end_line: 100,
+    }];
+    let metrics = compute_duplication(&clones, &units);
+    assert!(metrics.distribution.is_empty());
 }
 
 // === Binary format edge cases ===
@@ -356,19 +356,21 @@ fn test_binary_unicode_path() {
 // === Metrics edge cases ===
 
 #[test]
-fn test_metrics_p90_single_file() {
+fn test_metrics_p90_both_units_duplicated() {
     let tokens = rust_function_tokens(80);
     let files = vec![make_file("a.rs", &tokens), make_file("b.rs", &tokens)];
+    let units: Vec<UnitSpan> =
+        files.iter().map(UnitSpan::whole_file).collect();
     let clones = find_clones(&files, 50);
-    let metrics = compute_duplication(&clones, &files, None);
+    let metrics = compute_duplication(&clones, &units);
 
-    // With 2 files both duplicated, p90 should be meaningful
+    // With 2 units both duplicated, p90 should be meaningful
     assert!(metrics.p90 > 0.0);
     assert!(metrics.p90 <= 100.0);
 }
 
 #[test]
-fn test_metrics_files_without_duplication_not_in_distribution() {
+fn test_metrics_units_without_duplication_not_in_distribution() {
     let tokens = rust_function_tokens(80);
     let unique: Vec<&str> = vec!["struct"; 80];
 
@@ -377,16 +379,18 @@ fn test_metrics_files_without_duplication_not_in_distribution() {
         make_file("b.rs", &tokens),
         make_file("c.rs", &unique), // no duplication
     ];
+    let units: Vec<UnitSpan> =
+        files.iter().map(UnitSpan::whole_file).collect();
 
     let clones = find_clones(&files, 50);
-    let metrics = compute_duplication(&clones, &files, None);
+    let metrics = compute_duplication(&clones, &units);
 
-    // distribution should only contain files with duplication
-    let dist_files: Vec<&str> =
-        metrics.distribution.iter().map(|(f, _)| f.as_str()).collect();
+    // distribution should only contain units with duplication
+    let dist_units: Vec<&str> =
+        metrics.distribution.iter().map(|(id, _)| id.as_str()).collect();
     assert!(
-        !dist_files.contains(&"c.rs"),
-        "file without duplication should not be in distribution"
+        !dist_units.contains(&"c.rs::all"),
+        "unit without duplication should not be in distribution"
     );
 }
 
@@ -401,15 +405,14 @@ fn test_self_clone_metrics() {
     tokens.extend_from_slice(&block);
 
     let files = vec![make_file("a.rs", &tokens)];
+    let units: Vec<UnitSpan> =
+        files.iter().map(UnitSpan::whole_file).collect();
     let clones = find_clones(&files, 20);
 
     if !clones.is_empty() {
-        let metrics = compute_duplication(&clones, &files, None);
+        let metrics = compute_duplication(&clones, &units);
         // The duplicated lines should be counted once (deduplicated)
-        let file_a = &metrics.files[0];
-        assert!(
-            file_a.percentage <= 100.0,
-            "dedup percentage should be <= 100"
-        );
+        let (_, pct) = &metrics.distribution[0];
+        assert!(*pct <= 100, "dedup percentage should be <= 100");
     }
 }

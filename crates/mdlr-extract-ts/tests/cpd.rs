@@ -12,6 +12,13 @@
 
 use std::path::Path;
 
+/// One unit spanning each whole file, for attribution in tests.
+fn whole_file_units(
+    files: &[mdlr_cpd::FileTokens],
+) -> Vec<mdlr_cpd::UnitSpan> {
+    files.iter().map(mdlr_cpd::UnitSpan::whole_file).collect()
+}
+
 /// Write source files to a temp dir, run the extractor, load `.tokens` files,
 /// and return the deserialized token streams.
 fn tokenize_files(files: &[(&str, &str)]) -> Vec<mdlr_cpd::FileTokens> {
@@ -114,7 +121,8 @@ function handlePayments(payments) {
         "should detect copy-pasted function with renamed variables"
     );
 
-    let metrics = mdlr_cpd::compute_duplication(&clones, &all, None);
+    let units = whole_file_units(&all);
+    let metrics = mdlr_cpd::compute_duplication(&clones, &units);
     assert!(metrics.max > 50.0, "both files should show high duplication");
 }
 
@@ -375,37 +383,24 @@ export const CONFIG = {
     ]);
 
     let clones = mdlr_cpd::find_clones(&all, 20);
-    let metrics = mdlr_cpd::compute_duplication(&clones, &all, None);
+    let units = whole_file_units(&all);
+    let metrics = mdlr_cpd::compute_duplication(&clones, &units);
 
     assert!(metrics.clone_count > 0, "should detect clones");
 
-    // The duplicated files should show significant duplication
-    let dup_files: Vec<_> = metrics
-        .files
+    // The duplicated files' units should show significant duplication
+    let dup_units: Vec<_> = metrics
+        .distribution
         .iter()
-        .filter(|f| {
-            let name = f.file.to_string_lossy();
-            name.contains("fetchA") || name.contains("fetchB")
-        })
+        .filter(|(id, _)| id.contains("fetchA") || id.contains("fetchB"))
         .collect();
-    for f in &dup_files {
-        assert!(
-            f.percentage > 30.0,
-            "{} should show >30% duplication, got {:.1}%",
-            f.file.display(),
-            f.percentage
-        );
+    for (id, pct) in &dup_units {
+        assert!(*pct > 30, "{id} should show >30% duplication, got {pct}%");
     }
 
     // Config file should show 0% duplication
-    let config_file = metrics
-        .files
-        .iter()
-        .find(|f| f.file.to_string_lossy().contains("config"));
-    if let Some(cf) = config_file {
-        assert_eq!(
-            cf.duplicated_lines, 0,
-            "config file should have 0 duplicated lines"
-        );
-    }
+    assert!(
+        !metrics.distribution.iter().any(|(id, _)| id.contains("config")),
+        "config file should have 0 duplicated lines"
+    );
 }

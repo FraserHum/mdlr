@@ -826,8 +826,10 @@ function transformEntries(entries: number[]): number[] {
         "should detect duplicate functions across files"
     );
 
-    // Verify metrics
-    let metrics = mdlr_cpd::compute_duplication(&clones, &all_tokens, None);
+    // Verify metrics, attributing to one whole-file unit per token file
+    let units: Vec<mdlr_cpd::UnitSpan> =
+        all_tokens.iter().map(mdlr_cpd::UnitSpan::whole_file).collect();
+    let metrics = mdlr_cpd::compute_duplication(&clones, &units);
     assert!(metrics.clone_count > 0);
     assert!(metrics.max > 0.0);
 }

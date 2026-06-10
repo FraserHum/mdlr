@@ -6,15 +6,17 @@ use std::path::{Path, PathBuf};
 use crate::cache::CacheStore;
 use crate::cli::OutputFormat;
 use crate::config;
+use crate::display_scope::{self, DisplayScope};
 use crate::extraction::{
     extract_go, extract_py, extract_rust, extract_ts, has_python_project,
     has_ts_files, load_entries_from_dir, load_tokens_from_dir,
 };
 use crate::find_project_root;
+use crate::git_diff::ChangedFiles;
 use crate::path_scope::PathScope;
 use crate::progress::CheckProgress;
 use crate::timing;
-use mdlr_core::{Graph, Unit, build_with_progress as build_graph};
+use mdlr_core::{Graph, Unit, UnitKind, build_with_progress as build_graph};
 use mdlr_metrics::{
     ComplexityMetrics, CoverageMetrics, FileLocMetrics, LcovData,
     StructMetrics, StructuralMetrics,
@@ -29,8 +31,28 @@ pub(crate) enum CheckFilter {
     Path(PathScope),
     /// Filter by symbol ID
     Symbol(String),
-    /// Filter by git diff — only files changed on the current branch
-    Diff(HashSet<PathBuf>),
+    /// Diff mode — display only Units whose span overlaps a changed line
+    Diff(DiffSpec),
+}
+
+/// The active diff for diff mode: which lines changed, and relative to what.
+pub(crate) struct DiffSpec {
+    pub kind: DiffKind,
+    pub files: ChangedFiles,
+}
+
+pub(crate) enum DiffKind {
+    /// Working tree vs HEAD (staged + unstaged + untracked).
+    Uncommitted,
+    /// Branch vs its merge-base with the base branch.
+    Branch { base: String },
+}
+
+/// Scope description for the output header, since diff mode switches scopes
+/// silently on git state.
+pub(crate) struct ScopeInfo {
+    pub mode: &'static str,
+    pub description: String,
 }
 
 /// Bundle of all computed metrics for a graph
@@ -84,6 +106,8 @@ fn parse_check_filter(target: Option<&str>, cwd: &Path) -> CheckFilter {
 
 /// Check if a file path passes the filter.
 /// When `folder` is set, also requires the file to be inside that directory.
+/// Diff mode never load-filters: all units stay in the graph so metric values
+/// (fan_in in particular) are accurate, and scoping happens at display time.
 fn passes_path_filter(
     file_path: &Path,
     filter: &CheckFilter,
@@ -91,18 +115,22 @@ fn passes_path_filter(
 ) -> bool {
     let passes_mode = match filter {
         CheckFilter::Path(scope) => scope.matches(file_path),
-        CheckFilter::Diff(changed) => {
-            file_path.canonicalize().map_or(false, |p| changed.contains(&p))
+        CheckFilter::Symbol(_) | CheckFilter::None | CheckFilter::Diff(_) => {
+            true
         }
-        CheckFilter::Symbol(_) | CheckFilter::None => true,
     };
     if !passes_mode {
         return false;
     }
-    if let Some(folder) = folder {
-        file_path.canonicalize().map_or(false, |p| p.starts_with(folder))
-    } else {
-        true
+    match filter {
+        // Diff mode: the folder restricts the display scope, not the graph.
+        CheckFilter::Diff(_) => true,
+        _ => match folder {
+            Some(folder) => file_path
+                .canonicalize()
+                .map_or(false, |p| p.starts_with(folder)),
+            None => true,
+        },
     }
 }
 
@@ -138,7 +166,6 @@ fn compute_coverage(
     graph: &Graph,
     cov_files: &[PathBuf],
     repo_root: &Path,
-    scope_files: Option<&HashSet<PathBuf>>,
     config: &config::Config,
     progress: &CheckProgress,
 ) -> Option<CoverageMetrics> {
@@ -171,7 +198,7 @@ fn compute_coverage(
         progress.warn(w);
     }
 
-    let cov = CoverageMetrics::compute(graph, &lcov, repo_root, scope_files);
+    let cov = CoverageMetrics::compute(graph, &lcov, repo_root, None);
     warn_coverage_anomalies(progress, &cov);
     Some(cov)
 }
@@ -180,7 +207,6 @@ fn compute_coverage(
 fn compute_all_metrics(
     units: Vec<Unit>,
     all_tokens: &[mdlr_cpd::FileTokens],
-    scope_files: Option<&HashSet<PathBuf>>,
     config: &config::Config,
     progress: &CheckProgress,
     cov_files: &[PathBuf],
@@ -215,6 +241,20 @@ fn compute_all_metrics(
     let duplication = if config.is_disabled("duplication_pct") {
         mdlr_cpd::DuplicationMetrics::default()
     } else {
+        // Duplicated lines attribute to the innermost containing unit; whole-
+        // file Module units are excluded so they don't swallow orphan lines
+        // (duplicated imports/headers), which are dropped by design.
+        let unit_spans: Vec<mdlr_cpd::UnitSpan> = graph
+            .units
+            .iter()
+            .filter(|u| u.kind != UnitKind::Module)
+            .map(|u| mdlr_cpd::UnitSpan {
+                id: u.id.clone(),
+                file: u.file.clone(),
+                start_line: u.span.start_line as u32,
+                end_line: u.span.end_line as u32,
+            })
+            .collect();
         let token_file_count = all_tokens.len() as u64;
         let bar = progress.start_bar("Detecting duplicates", token_file_count);
         let duplication = tracing::info_span!("cpd").in_scope(|| {
@@ -223,20 +263,14 @@ fn compute_all_metrics(
                 config.cpd.min_tokens,
                 |i| bar.set_position(i as u64),
             );
-            mdlr_cpd::compute_duplication(&clones, all_tokens, scope_files)
+            mdlr_cpd::compute_duplication(&clones, &unit_spans)
         });
         bar.finish();
         duplication
     };
 
-    let coverage = compute_coverage(
-        &graph,
-        cov_files,
-        repo_root,
-        scope_files,
-        config,
-        progress,
-    );
+    let coverage =
+        compute_coverage(&graph, cov_files, repo_root, config, progress);
 
     ComputedMetrics {
         graph,
@@ -266,6 +300,10 @@ fn setup_timing(enabled: bool) -> Option<timing::TimingPrinter> {
 /// Load cache entries and collect units matching the filter.
 /// Entries with `cached_at < generation_id` are stale and skipped.
 /// Also loads all token caches for CPD (which needs project-wide data).
+///
+/// In diff mode every unit is loaded (metrics need the full graph) and the
+/// returned [`DisplayScope`] holds the Changed Units — those whose span
+/// overlaps a changed line — plus the touched files for `file_loc`.
 fn load_filtered_units(
     store: &CacheStore,
     filter: &CheckFilter,
@@ -275,7 +313,7 @@ fn load_filtered_units(
     Vec<crate::cache::FileCacheEntry>,
     Vec<Unit>,
     Vec<mdlr_cpd::FileTokens>,
-    Option<HashSet<PathBuf>>,
+    Option<DisplayScope>,
 )> {
     let mut all_entries = Vec::new();
     load_entries_from_dir(&store.cache_dir(), &mut all_entries)?;
@@ -288,9 +326,13 @@ fn load_filtered_units(
 
     let mut entries = Vec::new();
     let mut units = Vec::new();
-    let mut scope_files: Option<HashSet<PathBuf>> = match filter {
-        CheckFilter::None => None,
-        _ => Some(HashSet::new()),
+    let mut scope: Option<DisplayScope> = match filter {
+        CheckFilter::Diff(_) => Some(DisplayScope {
+            unit_ids: HashSet::new(),
+            files: HashSet::new(),
+            touched_files: 0,
+        }),
+        _ => None,
     };
 
     for entry in all_entries {
@@ -300,14 +342,60 @@ fn load_filtered_units(
         let file_path = store.root().join(&entry.source_path);
         if passes_path_filter(&file_path, filter, folder) {
             units.extend(entry.units.clone());
-            if let Some(ref mut scope) = scope_files {
-                scope.insert(entry.source_path.clone());
-            }
+        }
+        if let (CheckFilter::Diff(spec), Some(scope)) = (filter, &mut scope) {
+            collect_changed_units(spec, &entry, &file_path, folder, scope);
         }
         entries.push(entry);
     }
 
-    Ok((entries, units, all_tokens, scope_files))
+    Ok((entries, units, all_tokens, scope))
+}
+
+/// Add `entry`'s Changed Units (span overlapping a changed line) and touched
+/// file to the display scope. A unit is in scope if *any* changed line falls
+/// in its span — all overlapping units count, parents included.
+fn collect_changed_units(
+    spec: &DiffSpec,
+    entry: &crate::cache::FileCacheEntry,
+    file_path: &Path,
+    folder: Option<&Path>,
+    scope: &mut DisplayScope,
+) {
+    let Ok(canonical) = file_path.canonicalize() else { return };
+    if let Some(folder) = folder
+        && !canonical.starts_with(folder)
+    {
+        return;
+    }
+    let Some(span) = spec.files.get(&canonical) else { return };
+
+    scope.touched_files += 1;
+    // `file_loc` keys rows by the unit's `file` string; record the entry's
+    // source path too in case the entry has no units.
+    scope.files.insert(entry.source_path.to_string_lossy().to_string());
+    for unit in &entry.units {
+        scope.files.insert(unit.file.to_string_lossy().to_string());
+        if span.overlaps(unit.span.start_line, unit.span.end_line) {
+            scope.unit_ids.insert(unit.id.clone());
+        }
+    }
+    // Close over parent pointers: a changed method puts its struct in scope
+    // (its lcom/methods_per_struct genuinely changed) even though the struct's
+    // span — just the field block in Rust — doesn't contain the changed lines.
+    loop {
+        let mut added = false;
+        for unit in &entry.units {
+            if scope.unit_ids.contains(&unit.id)
+                && let Some(parent) = &unit.parent
+            {
+                added |= scope.unit_ids.insert(parent.clone());
+            }
+        }
+        if !added {
+            break;
+        }
+    }
 }
 
 fn run_extractor(
@@ -326,6 +414,25 @@ fn run_extractor(
     }
 }
 
+/// Run every language extractor whose project markers are present.
+fn run_extractors(ctx: &CheckContext, progress: &CheckProgress) {
+    let root = ctx.store.root();
+    type ExtractFn = fn(&CacheStore, u64) -> Result<bool>;
+    let extractors: [(&str, bool, ExtractFn); 4] = [
+        ("Extracting Rust", root.join("Cargo.toml").exists(), extract_rust),
+        ("Extracting TypeScript", has_ts_files(root), extract_ts),
+        ("Extracting Go", root.join("go.mod").exists(), extract_go),
+        ("Extracting Python", has_python_project(root), extract_py),
+    ];
+    for (name, detected, extract) in extractors {
+        if detected {
+            run_extractor(name, progress, || {
+                extract(&ctx.store, ctx.generation_id)
+            });
+        }
+    }
+}
+
 /// Extract, load, validate, and compute all metrics.
 fn extract_and_analyze(
     ctx: &CheckContext,
@@ -333,32 +440,11 @@ fn extract_and_analyze(
     folder: Option<&Path>,
     progress: &CheckProgress,
     cov_files: &[PathBuf],
-) -> Result<(ComputedMetrics, usize)> {
-    let root = ctx.store.root();
-
-    if root.join("Cargo.toml").exists() {
-        run_extractor("Extracting Rust", progress, || {
-            extract_rust(&ctx.store, ctx.generation_id)
-        });
-    }
-    if has_ts_files(root) {
-        run_extractor("Extracting TypeScript", progress, || {
-            extract_ts(&ctx.store, ctx.generation_id)
-        });
-    }
-    if root.join("go.mod").exists() {
-        run_extractor("Extracting Go", progress, || {
-            extract_go(&ctx.store, ctx.generation_id)
-        });
-    }
-    if has_python_project(root) {
-        run_extractor("Extracting Python", progress, || {
-            extract_py(&ctx.store, ctx.generation_id)
-        });
-    }
+) -> Result<(ComputedMetrics, usize, Option<DisplayScope>)> {
+    run_extractors(ctx, progress);
 
     let spinner = progress.start_spinner("Loading cache");
-    let (entries, units, all_tokens, scope_files) =
+    let (entries, units, all_tokens, scope) =
         load_filtered_units(&ctx.store, filter, folder, ctx.generation_id)?;
     spinner.finish();
 
@@ -372,16 +458,61 @@ fn extract_and_analyze(
     }
 
     let entry_count = entries.len();
-    let computed = compute_all_metrics(
+    let mut computed = compute_all_metrics(
         units,
         &all_tokens,
-        scope_files.as_ref(),
         &ctx.config,
         progress,
         cov_files,
         ctx.store.root(),
     );
-    Ok((computed, entry_count))
+    if let Some(scope) = &scope {
+        display_scope::apply(&mut computed, scope);
+    }
+    Ok((computed, entry_count, scope))
+}
+
+/// Build the scope header line announcing what this run reports on.
+fn describe_scope(
+    filter: &CheckFilter,
+    scope: Option<&DisplayScope>,
+) -> ScopeInfo {
+    match filter {
+        CheckFilter::None => ScopeInfo {
+            mode: "whole-project",
+            description: "whole project".to_string(),
+        },
+        CheckFilter::Path(p) => {
+            let path = match p {
+                PathScope::File(p) | PathScope::Directory(p) => p.display(),
+            };
+            ScopeInfo { mode: "path", description: format!("path {path}") }
+        }
+        CheckFilter::Symbol(s) => {
+            ScopeInfo { mode: "symbol", description: format!("symbol {s}") }
+        }
+        CheckFilter::Diff(spec) => {
+            let (mode, what) = match &spec.kind {
+                DiffKind::Uncommitted => {
+                    ("uncommitted", "uncommitted changes".to_string())
+                }
+                DiffKind::Branch { base } => {
+                    ("branch-diff", format!("branch diff vs {base}"))
+                }
+            };
+            let (units, files) = scope
+                .map(|s| (s.unit_ids.len(), s.touched_files))
+                .unwrap_or((0, 0));
+            ScopeInfo {
+                mode,
+                description: format!(
+                    "{what} ({units} unit{} in {files} file{})",
+                    if units == 1 { "" } else { "s" },
+                    if files == 1 { "" } else { "s" },
+                ),
+            }
+        }
+    }
 }
 
 /// Inputs for [`handle_check`], mirroring the CLI `check` subcommand plus the
@@ -437,32 +568,41 @@ pub fn handle_check(args: CheckArgs) -> Result<()> {
         None
     };
 
+    // Diff-mode scope precedence: (1) a dirty working tree (any source change
+    // vs HEAD — staged, unstaged, or untracked) scopes to those edits' Changed
+    // Units; (2) a clean tree on a branch scopes to the branch diff vs the
+    // merge-base; (3) a clean tree on main/master analyzes the whole project.
     let filter = if target.is_some() || all {
         // Explicit target or --all flag: skip diff mode
         parse_check_filter(target, &ctx.cwd)
-    } else if crate::git_diff::is_on_base_branch(ctx.store.root()) {
-        // On main/master there's no branch diff. If the working tree has
-        // uncommitted *source* changes, scope to those; otherwise (clean tree,
-        // or doc-only edits) analyze the whole project.
-        let changed = crate::git_diff::diff_files_head(ctx.store.root())?;
-        if changed.iter().any(|p| crate::extraction::is_source_path(p)) {
-            CheckFilter::Diff(changed)
-        } else {
-            CheckFilter::None
-        }
     } else {
-        // On a branch: diff mode by default
-        let changed = crate::git_diff::diff_files(ctx.store.root())?;
-        CheckFilter::Diff(changed)
+        let dirty = crate::git_diff::working_tree_changes(ctx.store.root())?;
+        if dirty.keys().any(|p| crate::extraction::is_source_path(p)) {
+            CheckFilter::Diff(DiffSpec {
+                kind: DiffKind::Uncommitted,
+                files: dirty,
+            })
+        } else if crate::git_diff::is_on_base_branch(ctx.store.root()) {
+            CheckFilter::None
+        } else {
+            let (base, files) =
+                crate::git_diff::branch_changes(ctx.store.root())?;
+            CheckFilter::Diff(DiffSpec {
+                kind: DiffKind::Branch { base },
+                files,
+            })
+        }
     };
 
-    let (computed, entry_count) = extract_and_analyze(
+    let (computed, entry_count, scope) = extract_and_analyze(
         &ctx,
         &filter,
         folder.as_deref(),
         &progress,
         &cov,
     )?;
+
+    let scope_info = describe_scope(&filter, scope.as_ref());
 
     let result = match format {
         OutputFormat::Text => crate::check_output::format_text_output(
@@ -472,12 +612,14 @@ pub fn handle_check(args: CheckArgs) -> Result<()> {
             pretty,
             &filter,
             &ctx.store,
+            &scope_info,
         ),
         OutputFormat::Json => crate::check_output::format_json_output(
             &computed,
             &ctx.config,
             entry_count,
             &filter,
+            &scope_info,
         ),
     };
 

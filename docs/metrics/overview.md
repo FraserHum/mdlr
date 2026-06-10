@@ -28,6 +28,12 @@ mdlr computes structural metrics that help you understand the modularity and cou
 |--------|-------------|
 | [File LOC](file-loc.md) | Lines of code per file |
 
+### Duplication
+
+| Metric | Description |
+|--------|-------------|
+| duplication_pct | % of a unit's lines that are part of a copy-pasted block (token-based clone detection). Duplicated lines attribute to the innermost containing unit; lines outside any unit (e.g. duplicated import blocks) are ignored |
+
 ### Impl Metrics
 
 | Metric | Description |

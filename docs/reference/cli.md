@@ -28,15 +28,23 @@ mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A] [-f <dir>] 
 | `-q, --quiet` | false | Suppress progress display (progress is shown by default when stderr is a TTY) |
 | `--cov <PATH>` | - | LCOV coverage file to overlay onto changed files. Repeatable: pass `--cov` once per file and they are merged. Adds two metrics: `line_cov` (per-function %) and `uncov_branches` (per-function untaken-branch count, only when the lcov has BRDA records). See [line coverage](../metrics/line-coverage.md) and [uncovered branches](../metrics/uncov-branches.md). |
 
-By default, `check` uses **diff mode** on branches (only analyzing files changed since main/master). On main/master there's no branch diff, so `check` analyzes all files — unless the working tree has uncommitted source changes, in which case it scopes to those changed files (doc-only edits like README don't trigger this). Use `-A` to force analyzing all files. Use `-f` to scope metrics to a specific directory — this works in both diff and all modes.
+By default, `check` runs in **diff mode**, picking one of three scopes by precedence:
+
+1. **Dirty working tree** — any uncommitted source change vs HEAD (staged, unstaged, or untracked) scopes output to the *units* those edits touch. This supports the edit → `mdlr check` → commit loop: you see only what your edit did.
+2. **Clean tree on a branch** — output scopes to the units changed since the merge-base with main/master.
+3. **Clean tree on main/master** — the whole project.
+
+A unit is in scope when any changed line falls within its span — parents included, so editing a method also surfaces its impl/struct metrics. `file_loc` (a file-keyed metric) shows for any touched file. Doc-only edits (e.g. README) don't count as dirty. Every run prints a one-line scope header (e.g. `scope: uncommitted changes (3 units in 2 files)`) in both text and JSON output, since the scope switches silently on git state.
+
+Diff mode only filters what is *displayed*: metrics are always computed over the full project graph, so values like `fan_in` count callers everywhere. Use `-A` to force analyzing (and displaying) everything. Use `-f` to scope metrics to a specific directory — this works in both diff and all modes.
 
 Running `check` extracts all files and writes results to the cache.
 
 **Examples:**
 
 ```bash
-# Analyze (diff mode on branches; all files on main/master, or just
-# uncommitted source changes if the working tree is dirty)
+# Analyze (units touched by uncommitted changes if the tree is dirty;
+# units changed on the branch if clean; whole project on clean main/master)
 mdlr check
 
 # Force all files even when on a branch

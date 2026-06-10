@@ -6,7 +6,7 @@ use anyhow::Result;
 use std::io::Write;
 
 use crate::cache::CacheStore;
-use crate::check::{CheckFilter, ComputedMetrics};
+use crate::check::{CheckFilter, ComputedMetrics, ScopeInfo};
 use crate::config;
 use crate::json_output::{
     build_bucketed_json, build_complexity_json, build_fan_metrics_json,
@@ -31,7 +31,12 @@ pub(crate) fn format_text_output(
     pretty: bool,
     filter: &CheckFilter,
     store: &CacheStore,
+    scope: &ScopeInfo,
 ) -> Result<()> {
+    // Diff mode switches scope silently on git state; always say which scope
+    // this run reported on.
+    println!("scope: {}", scope.description);
+
     let bundle = MetricsBundle {
         structural: &computed.structural,
         complexity: &computed.complexity,
@@ -78,6 +83,7 @@ pub(crate) fn format_json_output(
     config: &config::Config,
     extracted_count: usize,
     filter: &CheckFilter,
+    scope: &ScopeInfo,
 ) -> Result<()> {
     // When filtering by symbol, output specific metrics for that symbol
     if let CheckFilter::Symbol(symbol_id) = filter {
@@ -90,6 +96,10 @@ pub(crate) fn format_json_output(
         computed.graph.units.iter().filter(|u| u.partial).count();
 
     let output = serde_json::json!({
+        "scope": {
+            "mode": scope.mode,
+            "description": scope.description,
+        },
         "files": {
             "extracted": extracted_count,
         },
@@ -118,7 +128,7 @@ fn build_metrics_json(
         "p90": computed.duplication.p90,
         "clone_count": computed.duplication.clone_count,
         "distribution": computed.duplication.distribution.iter()
-            .map(|(file, pct)| serde_json::json!({"file": file, "duplication_pct": pct}))
+            .map(|(unit, pct)| serde_json::json!({"unit": unit, "duplication_pct": pct}))
             .collect::<Vec<_>>(),
     });
 

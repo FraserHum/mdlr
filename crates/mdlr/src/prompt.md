@@ -7,8 +7,10 @@ Use mdlr to identify and improve modularity issues in the codebase.
 ### Quick Start
 
 ```bash
-# Analyze codebase (diff mode on branches; all files on main/master,
-# or just uncommitted source changes if the working tree is dirty)
+# Analyze codebase. Scope picks itself from git state and is announced by a
+# "scope:" header line: units touched by uncommitted changes if the working
+# tree is dirty; units changed vs main/master if on a clean branch; the whole
+# project on clean main/master. Typical loop: edit -> mdlr check -> commit.
 mdlr check
 
 # Force all files even when on a branch
@@ -55,6 +57,7 @@ mdlr metrics get cyclomatic
 - **cognitive**: Nesting-aware complexity. High = hard to understand (penalizes deep nesting)
 - **lcom**: Lack of cohesion. High = struct should be split
 - **methods_per_struct**: Methods in a struct. High = too many responsibilities
+- **duplication_pct**: % of a unit's lines that are copy-pasted (attributed to the innermost containing unit). High = extract a shared abstraction
 - **line_cov** (only with `--cov`): Per-function test coverage %. LOW = untested (lower is worse)
 - **uncov_branches** (only with `--cov` + BRDA): Per-function untaken branches. High = unexercised code paths
 
