@@ -255,12 +255,6 @@ fn build_symbol_json(
             &t.fan_out_max,
             Desc,
         ),
-        (
-            "function_size",
-            &computed.complexity.size.distribution,
-            &t.function_size,
-            Desc,
-        ),
         ("params", &computed.complexity.params.distribution, &t.params, Desc),
         (
             "cyclomatic",
@@ -321,6 +315,36 @@ fn build_symbol_json(
             thresholds,
             symbol_id,
             *direction,
+        );
+    }
+
+    // function_size is two-sided: the low side applies only when the unit
+    // has exactly one visible caller (fan_in == 1); otherwise only the high
+    // side is evaluated.
+    if !config.is_disabled("function_size")
+        && let Some((_, value)) = computed
+            .complexity
+            .size
+            .distribution
+            .iter()
+            .find(|(n, _)| n == symbol_id)
+    {
+        let fan_in = computed
+            .structural
+            .fan_in
+            .distribution
+            .iter()
+            .find(|(n, _)| n == symbol_id)
+            .map(|(_, v)| *v)
+            .unwrap_or(0);
+        let bucket = if fan_in == 1 {
+            t.function_size.evaluate(*value as f64)
+        } else {
+            t.function_size.high.evaluate(*value as f64)
+        };
+        metrics.insert(
+            "function_size".to_string(),
+            serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
         );
     }
 

@@ -79,6 +79,62 @@ impl MetricThresholds {
     }
 }
 
+/// Thresholds for a two-sided metric — one where both extremes are bad.
+/// `low` is evaluated lower-is-worse, `high` higher-is-worse; a value gets
+/// the worse of the two buckets. The ideal range sits between
+/// `low.excellent` and `high.excellent`.
+///
+/// Deserializes from either the split `{low: {...}, high: {...}}` form or
+/// the old flat `{excellent, good, fair, poor}` form, which is treated as
+/// the high side with the default low side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "TwoSidedRepr")]
+pub struct TwoSidedThresholds {
+    pub low: MetricThresholds,
+    pub high: MetricThresholds,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TwoSidedRepr {
+    Flat(MetricThresholds),
+    Split {
+        #[serde(default = "default_function_size_low")]
+        low: MetricThresholds,
+        #[serde(default = "default_function_size_high")]
+        high: MetricThresholds,
+    },
+}
+
+fn default_function_size_low() -> MetricThresholds {
+    defaults::FUNCTION_SIZE.low.clone()
+}
+
+fn default_function_size_high() -> MetricThresholds {
+    defaults::FUNCTION_SIZE.high.clone()
+}
+
+impl From<TwoSidedRepr> for TwoSidedThresholds {
+    fn from(repr: TwoSidedRepr) -> Self {
+        match repr {
+            TwoSidedRepr::Flat(high) => {
+                Self { low: default_function_size_low(), high }
+            }
+            TwoSidedRepr::Split { low, high } => Self { low, high },
+        }
+    }
+}
+
+impl TwoSidedThresholds {
+    /// Evaluate against both sides, taking the worse bucket. Callers that
+    /// exempt a unit from the low side use `self.high.evaluate()` directly.
+    pub fn evaluate(&self, value: f64) -> Bucket {
+        let low = self.low.evaluate_asc(value);
+        let high = self.high.evaluate(value);
+        if (low as u8) > (high as u8) { low } else { high }
+    }
+}
+
 /// Display configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplayConfig {
@@ -103,7 +159,7 @@ pub struct ThresholdsConfig {
     pub fan_in_mean: MetricThresholds,
     pub fan_out_max: MetricThresholds,
     pub fan_out_mean: MetricThresholds,
-    pub function_size: MetricThresholds,
+    pub function_size: TwoSidedThresholds,
     pub params: MetricThresholds,
     pub cyclomatic: MetricThresholds,
     pub cognitive: MetricThresholds,
@@ -118,7 +174,7 @@ pub struct ThresholdsConfig {
 
 /// Default threshold values as constants
 mod defaults {
-    use super::MetricThresholds;
+    use super::{MetricThresholds, TwoSidedThresholds};
 
     pub const DAG_DENSITY: MetricThresholds =
         MetricThresholds { excellent: 0.5, good: 1.0, fair: 1.5, poor: 2.0 };
@@ -135,11 +191,22 @@ mod defaults {
     pub const FAN_OUT_MEAN: MetricThresholds =
         MetricThresholds { excellent: 0.5, good: 1.0, fair: 2.0, poor: 3.0 };
 
-    pub const FUNCTION_SIZE: MetricThresholds = MetricThresholds {
-        excellent: 20.0,
-        good: 50.0,
-        fair: 100.0,
-        poor: 200.0,
+    // Two-sided: tiny functions are flagged too, but only when fan_in == 1
+    // (single-caller pass-throughs). poor: 1 keeps critical unreachable on
+    // the low side — a 1-liner never outranks a god function.
+    pub const FUNCTION_SIZE: TwoSidedThresholds = TwoSidedThresholds {
+        low: MetricThresholds {
+            excellent: 5.0,
+            good: 4.0,
+            fair: 3.0,
+            poor: 1.0,
+        },
+        high: MetricThresholds {
+            excellent: 20.0,
+            good: 50.0,
+            fair: 100.0,
+            poor: 200.0,
+        },
     };
 
     pub const PARAMS: MetricThresholds =
@@ -224,13 +291,13 @@ impl Default for ThresholdsConfig {
 }
 
 impl ThresholdsConfig {
-    /// Get thresholds for a metric by name
+    /// Get thresholds for a metric by name. `function_size` is two-sided and
+    /// not returned here; read `self.function_size.low/high` directly.
     pub fn get(&self, name: &str) -> Option<&MetricThresholds> {
         match name {
             "dag_density" => Some(&self.dag_density),
             "fan_in" => Some(&self.fan_in_max),
             "fan_out" => Some(&self.fan_out_max),
-            "function_size" => Some(&self.function_size),
             "params" => Some(&self.params),
             "cyclomatic" => Some(&self.cyclomatic),
             "cognitive" => Some(&self.cognitive),
@@ -344,6 +411,56 @@ mod tests {
         assert_eq!(thresholds.evaluate(1.8), Bucket::Poor);
         assert_eq!(thresholds.evaluate(2.0), Bucket::Critical);
         assert_eq!(thresholds.evaluate(5.0), Bucket::Critical);
+    }
+
+    #[test]
+    fn two_sided_evaluate_takes_worse_bucket() {
+        let t = defaults::FUNCTION_SIZE;
+        // Low side: 5+ excellent, 4 good, 3 fair, <=2 poor (critical
+        // unreachable since size >= 1).
+        assert_eq!(t.evaluate(1.0), Bucket::Poor);
+        assert_eq!(t.evaluate(2.0), Bucket::Poor);
+        assert_eq!(t.evaluate(3.0), Bucket::Fair);
+        assert_eq!(t.evaluate(4.0), Bucket::Good);
+        assert_eq!(t.evaluate(5.0), Bucket::Excellent);
+        // High side unchanged.
+        assert_eq!(t.evaluate(19.0), Bucket::Excellent);
+        assert_eq!(t.evaluate(50.0), Bucket::Fair);
+        assert_eq!(t.evaluate(250.0), Bucket::Critical);
+    }
+
+    #[test]
+    fn two_sided_parses_flat_form_as_high_side() {
+        let t: TwoSidedThresholds = serde_yaml::from_str(
+            "excellent: 10\ngood: 30\nfair: 60\npoor: 120\n",
+        )
+        .unwrap();
+        assert_eq!(t.high.excellent, 10.0);
+        assert_eq!(t.high.poor, 120.0);
+        // Low side falls back to defaults.
+        assert_eq!(t.low.excellent, 5.0);
+        assert_eq!(t.low.poor, 1.0);
+    }
+
+    #[test]
+    fn two_sided_parses_split_form() {
+        let t: TwoSidedThresholds = serde_yaml::from_str(
+            "low:\n  excellent: 6\n  good: 5\n  fair: 4\n  poor: 2\nhigh:\n  excellent: 25\n  good: 60\n  fair: 120\n  poor: 240\n",
+        )
+        .unwrap();
+        assert_eq!(t.low.excellent, 6.0);
+        assert_eq!(t.high.excellent, 25.0);
+    }
+
+    #[test]
+    fn two_sided_split_form_allows_one_side() {
+        let t: TwoSidedThresholds = serde_yaml::from_str(
+            "low:\n  excellent: 6\n  good: 5\n  fair: 4\n  poor: 2\n",
+        )
+        .unwrap();
+        assert_eq!(t.low.excellent, 6.0);
+        // High side falls back to defaults.
+        assert_eq!(t.high.excellent, 20.0);
     }
 
     #[test]

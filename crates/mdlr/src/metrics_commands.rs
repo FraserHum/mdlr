@@ -24,7 +24,7 @@ fn get_metric_descriptions() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "function_size",
-            "Function size in lines of code. High values suggest functions that are hard to understand and test.",
+            "Function size in lines of code. Two-sided: both extremes are bad. High values suggest functions that are hard to understand and test — consider splitting. Low values (a 1-2 line function) are flagged only when the function has exactly one caller (fan_in == 1): a single-caller pass-through that adds indirection without abstraction — consider inlining it into its caller. Tiny functions with unknown callers (fan_in 0: trait dispatch, pub API, entry points) or multiple callers (shared helpers, accessors) are never flagged; do not inline those.",
         ),
         (
             "params",
@@ -119,7 +119,22 @@ fn print_metric_detail(name: &str, config: &config::Config) -> Result<()> {
     }
     println!();
 
-    if let Some(t) = config.thresholds.get(name) {
+    if *name == "function_size" {
+        let t = &config.thresholds.function_size;
+        println!("thresholds (two-sided):");
+        println!("  high side (always applies):");
+        println!("    excellent  < {}", t.high.excellent);
+        println!("    good       < {}", t.high.good);
+        println!("    fair       < {}", t.high.fair);
+        println!("    poor       < {}", t.high.poor);
+        println!("    critical   >= {}", t.high.poor);
+        println!("  low side (only when fan_in == 1):");
+        println!("    excellent  >= {}", t.low.excellent);
+        println!("    good       >= {}", t.low.good);
+        println!("    fair       >= {}", t.low.fair);
+        println!("    poor       >= {}", t.low.poor);
+        println!("    critical   < {}", t.low.poor);
+    } else if let Some(t) = config.thresholds.get(name) {
         println!("thresholds:");
         println!("  excellent  < {}", t.excellent);
         println!("  good       < {}", t.good);
