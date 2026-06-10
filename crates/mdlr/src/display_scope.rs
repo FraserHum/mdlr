@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 
 use crate::check::ComputedMetrics;
-use mdlr_metrics::SortDirection;
+use mdlr_metrics::{SortDirection, p90_boundary};
 
 /// The set of Units and files one diff-mode `check` run reports on.
 pub(crate) struct DisplayScope {
@@ -40,9 +40,7 @@ pub(crate) fn apply(computed: &mut ComputedMetrics, scope: &DisplayScope) {
     for dm in
         [&mut c.size, &mut c.cyclomatic, &mut c.cognitive, &mut c.max_scope]
     {
-        retain(&mut dm.distribution, units);
-        (dm.max, dm.mean) = max_mean(&dm.distribution);
-        dm.p90 = p90(&dm.distribution, dm.sort_direction);
+        dm.retain_ids(units);
     }
     retain(&mut c.params.distribution, units);
     (c.params.max, c.params.mean) = max_mean(&c.params.distribution);
@@ -51,15 +49,14 @@ pub(crate) fn apply(computed: &mut ComputedMetrics, scope: &DisplayScope) {
     retain(&mut st.methods_per_struct.distribution, units);
     (st.methods_per_struct.max, st.methods_per_struct.mean) =
         max_mean(&st.methods_per_struct.distribution);
-    st.methods_per_struct.p90 =
-        p90(&st.methods_per_struct.distribution, SortDirection::Desc);
+    st.methods_per_struct.p90 = p90(&st.methods_per_struct.distribution);
     retain(&mut st.lcom.distribution, units);
     (st.lcom.max, st.lcom.mean) = max_mean(&st.lcom.distribution);
 
     let fl = &mut computed.file_loc;
     retain(&mut fl.distribution, &scope.files);
     (fl.max, fl.mean) = max_mean(&fl.distribution);
-    fl.p90 = p90(&fl.distribution, SortDirection::Desc);
+    fl.p90 = p90(&fl.distribution);
     fl.total = fl.distribution.iter().map(|(_, v)| v).sum();
 
     let d = &mut computed.duplication;
@@ -73,14 +70,11 @@ pub(crate) fn apply(computed: &mut ComputedMetrics, scope: &DisplayScope) {
         d.distribution.iter().map(|(_, v)| *v as f64).sum::<f64>()
             / d.distribution.len() as f64
     };
-    d.p90 = p90(&d.distribution, SortDirection::Desc) as f64;
+    d.p90 = p90(&d.distribution) as f64;
 
     if let Some(cov) = computed.coverage.as_mut() {
-        for dm in [&mut cov.line_cov, &mut cov.uncov_branches] {
-            retain(&mut dm.distribution, units);
-            (dm.max, dm.mean) = max_mean(&dm.distribution);
-            dm.p90 = p90(&dm.distribution, dm.sort_direction);
-        }
+        cov.line_cov.retain_ids(units);
+        cov.uncov_branches.retain_ids(units);
     }
 }
 
@@ -97,20 +91,9 @@ fn max_mean(dist: &[(String, usize)]) -> (usize, f64) {
     (max, sum as f64 / dist.len() as f64)
 }
 
-/// The boundary cutting off the worst 10% of values; mirrors
-/// `DistributionMetrics::from_counts_with_direction`.
-fn p90(dist: &[(String, usize)], direction: SortDirection) -> usize {
-    if dist.is_empty() {
-        return 0;
-    }
-    let mut sorted: Vec<usize> = dist.iter().map(|(_, v)| *v).collect();
-    sorted.sort_unstable();
-    let percentile = match direction {
-        SortDirection::Desc => 0.9,
-        SortDirection::Asc => 0.1,
-    };
-    let idx = (sorted.len() as f64 * percentile).ceil() as usize;
-    sorted[idx.max(1).min(sorted.len()) - 1]
+/// Worst-10% boundary for a higher-is-worse distribution.
+fn p90(dist: &[(String, usize)]) -> usize {
+    p90_boundary(dist.iter().map(|(_, v)| *v).collect(), SortDirection::Desc)
 }
 
 #[cfg(test)]
@@ -146,8 +129,9 @@ mod tests {
         // 10 values 1..=10: ceil(10*0.9)=9 → index 8 → value 9.
         let d: Vec<(String, usize)> =
             (1..=10).map(|i| (format!("u{i}"), i)).collect();
-        assert_eq!(p90(&d, SortDirection::Desc), 9);
+        assert_eq!(p90(&d), 9);
         // Asc: ceil(10*0.1)=1 → index 0 → value 1.
-        assert_eq!(p90(&d, SortDirection::Asc), 1);
+        let values: Vec<usize> = d.iter().map(|(_, v)| *v).collect();
+        assert_eq!(p90_boundary(values, SortDirection::Asc), 1);
     }
 }

@@ -5,7 +5,9 @@ pub mod file_loc;
 pub mod struct_metrics;
 pub mod structural;
 
-pub use complexity::{ComplexityMetrics, DistributionMetrics, SortDirection};
+pub use complexity::{
+    ComplexityMetrics, DistributionMetrics, SortDirection, p90_boundary,
+};
 pub use coverage::{CoverageMetrics, LcovData};
 pub use display::{
     Bucket, BucketedFanMetrics, BucketedMetrics, BucketedValue, DisplayMode,

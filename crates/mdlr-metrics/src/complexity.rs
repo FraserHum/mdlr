@@ -119,34 +119,6 @@ impl DistributionMetrics {
         counts: HashMap<String, usize>,
         sort_direction: SortDirection,
     ) -> Self {
-        if counts.is_empty() {
-            return Self {
-                max: 0,
-                mean: 0.0,
-                p90: 0,
-                distribution: vec![],
-                sort_direction,
-            };
-        }
-
-        let max = counts.values().copied().max().unwrap_or(0);
-        let sum: usize = counts.values().sum();
-        let mean = sum as f64 / counts.len() as f64;
-
-        let mut sorted_values: Vec<usize> = counts.values().copied().collect();
-        sorted_values.sort();
-        // `p90` is the boundary cutting off the worst 10% of values, regardless of
-        // direction: for `Desc` (higher = worse) that's the 90th percentile;
-        // for `Asc` (lower = worse) it's the 10th. So the worst-10% threshold
-        // is always reported on the metric's "worse" side of the distribution.
-        let percentile = match sort_direction {
-            SortDirection::Desc => 0.9,
-            SortDirection::Asc => 0.1,
-        };
-        let p90_idx =
-            (sorted_values.len() as f64 * percentile).ceil() as usize - 1;
-        let p90 = sorted_values.get(p90_idx).copied().unwrap_or(max);
-
         let mut distribution: Vec<_> = counts.into_iter().collect();
         match sort_direction {
             SortDirection::Desc => distribution
@@ -155,8 +127,52 @@ impl DistributionMetrics {
                 .sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))),
         }
 
-        Self { max, mean, p90, distribution, sort_direction }
+        let mut metrics =
+            Self { max: 0, mean: 0.0, p90: 0, distribution, sort_direction };
+        metrics.rebuild_aggregates();
+        metrics
     }
+
+    /// Drop every entry whose id is not in `keep`, then rebuild the
+    /// aggregates so they describe the retained set. Used by diff-mode
+    /// display scoping.
+    pub fn retain_ids(&mut self, keep: &std::collections::HashSet<String>) {
+        self.distribution.retain(|(id, _)| keep.contains(id));
+        self.rebuild_aggregates();
+    }
+
+    /// Recompute max/mean/p90 from the current distribution.
+    fn rebuild_aggregates(&mut self) {
+        let values: Vec<usize> =
+            self.distribution.iter().map(|(_, v)| *v).collect();
+        self.max = values.iter().copied().max().unwrap_or(0);
+        self.mean = if values.is_empty() {
+            0.0
+        } else {
+            values.iter().sum::<usize>() as f64 / values.len() as f64
+        };
+        self.p90 = p90_boundary(values, self.sort_direction);
+    }
+}
+
+/// The boundary cutting off the worst 10% of `values`, regardless of
+/// direction: for `Desc` (higher = worse) that's the 90th percentile; for
+/// `Asc` (lower = worse) it's the 10th. So the worst-10% threshold is always
+/// reported on the metric's "worse" side of the distribution.
+pub fn p90_boundary(
+    mut values: Vec<usize>,
+    direction: SortDirection,
+) -> usize {
+    if values.is_empty() {
+        return 0;
+    }
+    values.sort_unstable();
+    let percentile = match direction {
+        SortDirection::Desc => 0.9,
+        SortDirection::Asc => 0.1,
+    };
+    let idx = (values.len() as f64 * percentile).ceil() as usize;
+    values[idx.max(1).min(values.len()) - 1]
 }
 
 impl ParamMetrics {
