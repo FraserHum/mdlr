@@ -827,15 +827,8 @@ function transformEntries(entries: number[]): number[] {
     );
 
     // Verify metrics, attributing to one whole-file unit per token file
-    let units: Vec<mdlr_cpd::UnitSpan> = all_tokens
-        .iter()
-        .map(|f| mdlr_cpd::UnitSpan {
-            id: format!("{}::all", f.source_path.display()),
-            file: f.source_path.clone(),
-            start_line: 1,
-            end_line: f.tokens.last().map(|t| t.line).unwrap_or(1),
-        })
-        .collect();
+    let units: Vec<mdlr_cpd::UnitSpan> =
+        all_tokens.iter().map(mdlr_cpd::UnitSpan::whole_file).collect();
     let metrics = mdlr_cpd::compute_duplication(&clones, &units);
     assert!(metrics.clone_count > 0);
     assert!(metrics.max > 0.0);

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::matching::ClonePair;
+use crate::tokens::FileTokens;
 
 /// A unit's location, used to attribute duplicated lines. The caller supplies
 /// these from the extraction graph (functions, methods, structs, impls —
@@ -14,6 +15,20 @@ pub struct UnitSpan {
     /// 1-based inclusive line span.
     pub start_line: u32,
     pub end_line: u32,
+}
+
+impl UnitSpan {
+    /// One unit spanning an entire tokenized file (line 1 through the last
+    /// token's line), id `<path>::all`. For callers without extraction data —
+    /// primarily tests.
+    pub fn whole_file(tokens: &FileTokens) -> Self {
+        UnitSpan {
+            id: format!("{}::all", tokens.source_path.display()),
+            file: tokens.source_path.clone(),
+            start_line: 1,
+            end_line: tokens.tokens.last().map(|t| t.line).unwrap_or(1),
+        }
+    }
 }
 
 /// Aggregate duplication metrics across the project.

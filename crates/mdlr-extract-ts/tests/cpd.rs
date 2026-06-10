@@ -16,15 +16,7 @@ use std::path::Path;
 fn whole_file_units(
     files: &[mdlr_cpd::FileTokens],
 ) -> Vec<mdlr_cpd::UnitSpan> {
-    files
-        .iter()
-        .map(|f| mdlr_cpd::UnitSpan {
-            id: format!("{}::all", f.source_path.display()),
-            file: f.source_path.clone(),
-            start_line: 1,
-            end_line: f.tokens.last().map(|t| t.line).unwrap_or(1),
-        })
-        .collect()
+    files.iter().map(mdlr_cpd::UnitSpan::whole_file).collect()
 }
 
 /// Write source files to a temp dir, run the extractor, load `.tokens` files,

@@ -21,16 +21,6 @@ fn make_file(path: &str, token_values: &[&str]) -> FileTokens {
     }
 }
 
-/// Helper: a unit spanning one whole test file (tokens sit one per line).
-fn whole_file_unit(file: &FileTokens) -> UnitSpan {
-    UnitSpan {
-        id: format!("{}::f", file.source_path.display()),
-        file: file.source_path.clone(),
-        start_line: 1,
-        end_line: file.tokens.len() as u32,
-    }
-}
-
 /// Helper: generate a realistic-looking Rust function token sequence
 fn rust_function_tokens(size: usize) -> Vec<&'static str> {
     let pattern = [
@@ -102,7 +92,8 @@ fn test_end_to_end_metrics_computation() {
     let file_b = make_file("src/b.rs", &tokens);
 
     let files = vec![file_a, file_b];
-    let units: Vec<UnitSpan> = files.iter().map(whole_file_unit).collect();
+    let units: Vec<UnitSpan> =
+        files.iter().map(UnitSpan::whole_file).collect();
     let clones = find_clones(&files, 50);
     let metrics = compute_duplication(&clones, &units);
 
@@ -290,7 +281,8 @@ fn test_attribution_covers_both_clone_sides() {
         make_file("src/changed.rs", &tokens),
         make_file("src/unchanged.rs", &tokens),
     ];
-    let units: Vec<UnitSpan> = files.iter().map(whole_file_unit).collect();
+    let units: Vec<UnitSpan> =
+        files.iter().map(UnitSpan::whole_file).collect();
 
     let clones = find_clones(&files, 50);
     assert!(!clones.is_empty());
@@ -367,7 +359,8 @@ fn test_binary_unicode_path() {
 fn test_metrics_p90_both_units_duplicated() {
     let tokens = rust_function_tokens(80);
     let files = vec![make_file("a.rs", &tokens), make_file("b.rs", &tokens)];
-    let units: Vec<UnitSpan> = files.iter().map(whole_file_unit).collect();
+    let units: Vec<UnitSpan> =
+        files.iter().map(UnitSpan::whole_file).collect();
     let clones = find_clones(&files, 50);
     let metrics = compute_duplication(&clones, &units);
 
@@ -386,7 +379,8 @@ fn test_metrics_units_without_duplication_not_in_distribution() {
         make_file("b.rs", &tokens),
         make_file("c.rs", &unique), // no duplication
     ];
-    let units: Vec<UnitSpan> = files.iter().map(whole_file_unit).collect();
+    let units: Vec<UnitSpan> =
+        files.iter().map(UnitSpan::whole_file).collect();
 
     let clones = find_clones(&files, 50);
     let metrics = compute_duplication(&clones, &units);
@@ -395,7 +389,7 @@ fn test_metrics_units_without_duplication_not_in_distribution() {
     let dist_units: Vec<&str> =
         metrics.distribution.iter().map(|(id, _)| id.as_str()).collect();
     assert!(
-        !dist_units.contains(&"c.rs::f"),
+        !dist_units.contains(&"c.rs::all"),
         "unit without duplication should not be in distribution"
     );
 }
@@ -411,7 +405,8 @@ fn test_self_clone_metrics() {
     tokens.extend_from_slice(&block);
 
     let files = vec![make_file("a.rs", &tokens)];
-    let units: Vec<UnitSpan> = files.iter().map(whole_file_unit).collect();
+    let units: Vec<UnitSpan> =
+        files.iter().map(UnitSpan::whole_file).collect();
     let clones = find_clones(&files, 20);
 
     if !clones.is_empty() {
