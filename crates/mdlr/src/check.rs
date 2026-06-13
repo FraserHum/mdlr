@@ -7,8 +7,8 @@ use crate::cli::OutputFormat;
 use crate::config;
 use crate::display_scope::{self, DisplayScope};
 use crate::extraction::{
-    extract_go, extract_py, extract_rust, extract_ts, has_python_project,
-    has_ts_files,
+    extract_csharp, extract_go, extract_py, extract_rust, extract_ts,
+    has_csharp_project, has_python_project, has_ts_files,
 };
 use crate::find_project_root;
 use crate::progress::CheckProgress;
@@ -268,11 +268,12 @@ fn run_extractor(
 fn run_extractors(ctx: &CheckContext, progress: &CheckProgress) {
     let root = ctx.store.root();
     type ExtractFn = fn(&CacheStore, u64) -> Result<bool>;
-    let extractors: [(&str, bool, ExtractFn); 4] = [
+    let extractors: [(&str, bool, ExtractFn); 5] = [
         ("Extracting Rust", root.join("Cargo.toml").exists(), extract_rust),
         ("Extracting TypeScript", has_ts_files(root), extract_ts),
         ("Extracting Go", root.join("go.mod").exists(), extract_go),
         ("Extracting Python", has_python_project(root), extract_py),
+        ("Extracting C#", has_csharp_project(root), extract_csharp),
     ];
     for (name, detected, extract) in extractors {
         if detected {

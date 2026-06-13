@@ -1,4 +1,5 @@
 bin
+obj
 dist
 scratch
 target

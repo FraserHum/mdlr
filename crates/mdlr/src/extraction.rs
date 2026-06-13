@@ -16,11 +16,13 @@ const TYPESCRIPT: Language =
     Language { extensions: &["ts", "tsx", "js", "jsx"] };
 const GO: Language = Language { extensions: &["go"] };
 const PYTHON: Language = Language { extensions: &["py", "pyi"] };
+const CSHARP: Language = Language { extensions: &["cs"] };
 
 /// The single source of truth for which file extensions mdlr can extract.
-/// Go is listed here too even though it's a subprocess binary (not a linked
-/// crate), so the registry stays uniform across languages.
-pub const LANGUAGES: &[&Language] = &[&RUST, &TYPESCRIPT, &GO, &PYTHON];
+/// Go and C# are listed here too even though they are subprocess binaries
+/// (not linked crates), so the registry stays uniform across languages.
+pub const LANGUAGES: &[&Language] =
+    &[&RUST, &TYPESCRIPT, &GO, &PYTHON, &CSHARP];
 
 /// Whether `ext` (without leading dot) belongs to a supported language.
 pub fn is_source_extension(ext: &str) -> bool {
@@ -189,6 +191,76 @@ pub fn extract_go(store: &CacheStore, generation_id: u64) -> Result<bool> {
         .stderr(std::process::Stdio::null())
         .status()
         .context("Failed to run mdlr-extract-go")?;
+
+    Ok(status.success())
+}
+
+/// Detect whether the project has C# files or project/solution markers.
+pub fn has_csharp_project(root: &Path) -> bool {
+    let walker =
+        ignore::WalkBuilder::new(root).hidden(true).max_depth(Some(3)).build();
+    for entry in walker.flatten() {
+        if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+            if CSHARP.extensions.contains(&ext)
+                || matches!(ext, "sln" | "slnx" | "csproj")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Find the `mdlr-extract-csharp` binary, checking next to our own binary
+/// first.
+fn find_extract_csharp_binary() -> Option<PathBuf> {
+    if let Ok(current_exe) = env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            let sibling = dir.join("mdlr-extract-csharp");
+            if sibling.exists() {
+                return Some(sibling);
+            }
+        }
+    }
+    if let Ok(output) =
+        std::process::Command::new("which").arg("mdlr-extract-csharp").output()
+    {
+        if output.status.success() {
+            let path =
+                String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+    }
+    None
+}
+
+/// Shell out to `mdlr-extract-csharp` to extract units from C# files.
+#[tracing::instrument(name = "extract_csharp", skip_all)]
+pub fn extract_csharp(store: &CacheStore, generation_id: u64) -> Result<bool> {
+    let extract_bin = match find_extract_csharp_binary() {
+        Some(bin) => bin,
+        None => return Ok(true),
+    };
+
+    let workspace_root = store.root();
+    if !has_csharp_project(workspace_root) {
+        return Ok(true);
+    }
+
+    let status = std::process::Command::new(&extract_bin)
+        .arg("--root")
+        .arg(workspace_root)
+        .arg("--output")
+        .arg(store.cache_dir())
+        .arg("--generation-id")
+        .arg(generation_id.to_string())
+        .current_dir(workspace_root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("Failed to run mdlr-extract-csharp")?;
 
     Ok(status.success())
 }
