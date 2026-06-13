@@ -1,17 +1,23 @@
 # Releasing mdlr
 
 Releases are cut **from a laptop, no CI**. GoReleaser cross-compiles every
-target with `cargo-zigbuild` (Rust) and the native Go toolchain, packages both
-binaries together, publishes a GitHub Release on `thempatel/mdlr`, and pushes a
+target with `cargo-zigbuild` (Rust), the native Go toolchain, and a
+framework-dependent C# extractor publish, packages all runtime artifacts
+together, publishes a GitHub Release on `thempatel/mdlr`, and pushes a
 Homebrew **Cask** to `thempatel/homebrew-tap` for macOS.
 
 ## What ships
 
-Each release produces, per platform, a `.tar.gz` containing **both** binaries
-side by side:
+Each release produces, per platform, a `.tar.gz` containing:
 
 - `mdlr` — the Rust binary (rust/ts/py extractors linked in)
 - `mdlr-extract-go` — the Go extractor, spawned at runtime as a sibling of `mdlr`
+- `mdlr-extract-csharp` — a POSIX launcher, spawned at runtime as a sibling of `mdlr`
+- `libexec/mdlr-extract-csharp/` — the framework-dependent C# extractor app
+
+The C# extractor stays framework-dependent and non-single-file because
+`MSBuildWorkspace`/BuildHost discovery depends on normal assembly locations.
+Users need a .NET 8+ SDK installed for full C# semantic extraction.
 
 The build matrix (see the [README](../README.md#installation) for how consumers
 install each one):
@@ -39,6 +45,9 @@ are dynamically linked.
 ```sh
 # Toolchain (pinned in mise.toml)
 mise install                       # zig, cargo-zigbuild, goreleaser
+
+# C# extractor publish
+dotnet --info                      # requires a .NET 8+ SDK, not just runtime
 
 # Rust cross-compile targets
 rustup target add \
@@ -85,6 +94,10 @@ ls dist/                       # archives + checksums
 cat dist/homebrew/Casks/mdlr.rb  # inspect the generated cask
 ```
 
+Each archive should contain `mdlr`, `mdlr-extract-go`,
+`mdlr-extract-csharp`, and
+`libexec/mdlr-extract-csharp/mdlr-extract-csharp.dll`.
+
 ## Troubleshooting
 
 - **`ProcessFdQuotaExceeded` during linking** — you forgot `ulimit -n 65536`.
@@ -97,9 +110,9 @@ cat dist/homebrew/Casks/mdlr.rb  # inspect the generated cask
 - **macOS "Apple could not verify ... may be malware"** — this is Gatekeeper, not
   the signing issue above. Ad-hoc signing is **not** Apple notarization, so a
   downloaded (quarantined) binary is still blocked. The cask's post-install hook
-  strips the `com.apple.quarantine` xattr, so `brew install` users are fine. If
+  strips the `com.apple.quarantine` xattr recursively from the staged install, so `brew install` users are fine. If
   you run a **raw release tarball** directly, clear it yourself:
-  `xattr -dr com.apple.quarantine ./mdlr ./mdlr-extract-go`. The only way to drop
+  `xattr -dr com.apple.quarantine .`. The only way to drop
   the prompt entirely (including raw tarballs) is to notarize with a paid Apple
   Developer account.
 - **Cask push rejected** — `gh auth token` lacks `repo` scope, or you are not

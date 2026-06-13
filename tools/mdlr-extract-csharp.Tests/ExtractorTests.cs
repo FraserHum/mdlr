@@ -6,11 +6,11 @@ namespace MdlrExtractCSharp.Tests;
 
 public static class Fixture
 {
-    public static Dictionary<string, FileCacheEntry> Run(string root)
+    public static Dictionary<string, FileCacheEntry> Run(string root, int expectedExit = 0)
     {
         var outDir = Directory.CreateTempSubdirectory("mdlr-cs-out").FullName;
         var exit = Program.Run(root, outDir, 7777).GetAwaiter().GetResult();
-        Assert.Equal(0, exit);
+        Assert.Equal(expectedExit, exit);
 
         var results = new Dictionary<string, FileCacheEntry>();
         foreach (var file in Directory.EnumerateFiles(outDir, "*.json", SearchOption.AllDirectories))
@@ -338,7 +338,7 @@ public sealed class SemanticTests : IClassFixture<SemanticFixture>
     }
 
     [Fact]
-    public void TokensFilesAreWrittenForEveryEntry()
+    public async Task TokensFilesAreWrittenForEveryEntry()
     {
         // Re-run against a tiny project to inspect the .tokens binary layout.
         var root = Fixture.WriteProject(new()
@@ -347,7 +347,7 @@ public sealed class SemanticTests : IClassFixture<SemanticFixture>
             ["A.cs"] = "namespace N; // mdlr:ignore-start\n// mdlr:ignore-end\npublic class A { int F() { return 42; } }",
         });
         var outDir = Directory.CreateTempSubdirectory("mdlr-cs-tok").FullName;
-        Assert.Equal(0, Program.Run(root, outDir, 42).GetAwaiter().GetResult());
+        Assert.Equal(0, await Program.Run(root, outDir, 42));
 
         var data = File.ReadAllBytes(Path.Combine(outDir, "A.cs.tokens"));
         var (path, cachedAt, tokens) = ParseTokens(data);
@@ -396,7 +396,7 @@ public sealed class FallbackAndSolutionTests
                 }
                 """,
         });
-        var results = Fixture.Run(root);
+        var results = Fixture.Run(root, expectedExit: 2);
 
         var units = results["Loose.cs"].Units;
         Assert.All(units, u => Assert.True(u.Partial));
@@ -406,7 +406,7 @@ public sealed class FallbackAndSolutionTests
     }
 
     [Fact]
-    public void SlnxSolutionIsAnalyzed()
+    public async Task SlnxSolutionIsAnalyzed()
     {
         var root = Fixture.WriteProject(new()
         {
@@ -425,12 +425,125 @@ public sealed class FallbackAndSolutionTests
                 }
                 """,
         });
-        var results = Fixture.Run(root);
+        var outDir = Directory.CreateTempSubdirectory("mdlr-cs-out").FullName;
+        using var stderr = new StringWriter();
+        var originalError = Console.Error;
+        Console.SetError(stderr);
+        try
+        {
+            var exit = await Program.Run(root, outDir, 7777);
+            Assert.Equal(0, exit);
+        }
+        finally
+        {
+            Console.SetError(originalError);
+        }
+
+        Assert.DoesNotContain("No file format header found", stderr.ToString());
+
+        var results = new Dictionary<string, FileCacheEntry>();
+        foreach (var file in Directory.EnumerateFiles(outDir, "*.json", SearchOption.AllDirectories))
+        {
+            var entry = JsonSerializer.Deserialize<FileCacheEntry>(File.ReadAllText(file))!;
+            results[entry.SourcePath] = entry;
+        }
 
         var go = results["src/Lib/A.cs"].Units.Single(u => u.Id.EndsWith("::Go()", StringComparison.Ordinal));
-        // Loaded either natively or via the .csproj sweep; either way the
-        // result must be semantic (call edges, not partial).
         Assert.False(go.Partial);
         Assert.Contains("src/Lib/A.cs::N.A::Stop()", go.Calls);
+    }
+
+    [Fact]
+    public void ProjectReferencesLoadedByCsprojSweepAreAnalyzed()
+    {
+        var root = Fixture.WriteProject(new()
+        {
+            ["App.csproj"] = """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <OutputType>Exe</OutputType>
+                    <TargetFramework>net8.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="src/Lib/Lib.csproj" />
+                  </ItemGroup>
+                </Project>
+                """,
+            ["src/Lib/Lib.csproj"] = Fixture.LibCsproj,
+            ["src/Lib/Service.cs"] = """
+                namespace Lib;
+                public class Service
+                {
+                    public int Value() => 42;
+                }
+                """,
+            ["Program.cs"] = """
+                using Lib;
+
+                var service = new Service();
+                Console.WriteLine(service.Value());
+                """,
+        });
+        var results = Fixture.Run(root);
+
+        Assert.All(results.Values.SelectMany(e => e.Units), u => Assert.False(u.Partial));
+        var main = results["Program.cs"].Units.Single(u => u.Id.EndsWith("<Main>$", StringComparison.Ordinal));
+        Assert.Contains("src/Lib/Service.cs::Lib.Service::Value()", main.Calls);
+    }
+
+    [Fact]
+    public async Task SymlinkedProjectFilesDoNotEmitFallbackDuplicates()
+    {
+        var root = Fixture.WriteProject(new()
+        {
+            ["App.slnx"] = """
+                <Solution>
+                  <Project Path="game/Game.csproj" />
+                </Solution>
+                """,
+            ["game/Game.csproj"] = """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net8.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="addons/genode/Linked.cs" />
+                  </ItemGroup>
+                </Project>
+                """,
+            ["addons/genode/Linked.cs"] = """
+                namespace N;
+                public class Linked
+                {
+                    public void Go() { Stop(); }
+                    public void Stop() { }
+                }
+                """,
+        });
+
+        Directory.CreateDirectory(Path.Combine(root, "game", "addons"));
+        Directory.CreateSymbolicLink(
+            Path.Combine(root, "game", "addons", "genode"),
+            Path.Combine(root, "addons", "genode"));
+
+        var outDir = Directory.CreateTempSubdirectory("mdlr-cs-out").FullName;
+        Assert.Equal(0, await Program.Run(root, outDir, 7777));
+
+        var results = new Dictionary<string, FileCacheEntry>();
+        foreach (var file in Directory.EnumerateFiles(outDir, "*.json", SearchOption.AllDirectories))
+        {
+            var entry = JsonSerializer.Deserialize<FileCacheEntry>(File.ReadAllText(file))!;
+            results[entry.SourcePath] = entry;
+        }
+
+        Assert.Contains("game/addons/genode/Linked.cs", results.Keys);
+        Assert.DoesNotContain("addons/genode/Linked.cs", results.Keys);
+        Assert.All(results.Values.SelectMany(e => e.Units), u => Assert.False(u.Partial));
+
+        var go = results["game/addons/genode/Linked.cs"].Units.Single(u => u.Id.EndsWith("::Go()", StringComparison.Ordinal));
+        Assert.Contains("game/addons/genode/Linked.cs::N.Linked::Stop()", go.Calls);
     }
 }

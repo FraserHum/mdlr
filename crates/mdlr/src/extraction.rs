@@ -239,17 +239,22 @@ fn find_extract_csharp_binary() -> Option<PathBuf> {
 /// Shell out to `mdlr-extract-csharp` to extract units from C# files.
 #[tracing::instrument(name = "extract_csharp", skip_all)]
 pub fn extract_csharp(store: &CacheStore, generation_id: u64) -> Result<bool> {
-    let extract_bin = match find_extract_csharp_binary() {
-        Some(bin) => bin,
-        None => return Ok(true),
-    };
-
     let workspace_root = store.root();
     if !has_csharp_project(workspace_root) {
         return Ok(true);
     }
 
-    let status = std::process::Command::new(&extract_bin)
+    let extract_bin = match find_extract_csharp_binary() {
+        Some(bin) => bin,
+        None => {
+            eprintln!(
+                "Warning: C# project detected but mdlr-extract-csharp was not found next to mdlr or on PATH (results may be partial)"
+            );
+            return Ok(false);
+        }
+    };
+
+    let output = std::process::Command::new(&extract_bin)
         .arg("--root")
         .arg(workspace_root)
         .arg("--output")
@@ -258,11 +263,49 @@ pub fn extract_csharp(store: &CacheStore, generation_id: u64) -> Result<bool> {
         .arg(generation_id.to_string())
         .current_dir(workspace_root)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .output()
         .context("Failed to run mdlr-extract-csharp")?;
 
-    Ok(status.success())
+    let outcome = interpret_csharp_exit_code(output.status.code());
+    if !matches!(outcome, CSharpExtractionOutcome::Full) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.trim().is_empty() {
+            eprint!("{stderr}");
+            if !stderr.ends_with('\n') {
+                eprintln!();
+            }
+        }
+    }
+
+    match outcome {
+        CSharpExtractionOutcome::Full => Ok(true),
+        CSharpExtractionOutcome::Partial => Ok(false),
+        CSharpExtractionOutcome::Failed => {
+            eprintln!(
+                "Warning: C# extraction failed with status {} (results may be partial)",
+                output.status.code().map_or_else(
+                    || "signal".to_string(),
+                    |code| code.to_string()
+                )
+            );
+            Ok(false)
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CSharpExtractionOutcome {
+    Full,
+    Partial,
+    Failed,
+}
+
+fn interpret_csharp_exit_code(code: Option<i32>) -> CSharpExtractionOutcome {
+    match code {
+        Some(0) => CSharpExtractionOutcome::Full,
+        Some(2) => CSharpExtractionOutcome::Partial,
+        _ => CSharpExtractionOutcome::Failed,
+    }
 }
 
 /// Detect whether the project has Python files.
@@ -378,4 +421,37 @@ pub fn load_tokens_from_dir(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CSharpExtractionOutcome, interpret_csharp_exit_code};
+
+    #[test]
+    fn csharp_exit_zero_is_full_extraction() {
+        assert_eq!(
+            interpret_csharp_exit_code(Some(0)),
+            CSharpExtractionOutcome::Full
+        );
+    }
+
+    #[test]
+    fn csharp_exit_two_is_partial_extraction() {
+        assert_eq!(
+            interpret_csharp_exit_code(Some(2)),
+            CSharpExtractionOutcome::Partial
+        );
+    }
+
+    #[test]
+    fn other_csharp_exit_codes_are_failures() {
+        assert_eq!(
+            interpret_csharp_exit_code(Some(1)),
+            CSharpExtractionOutcome::Failed
+        );
+        assert_eq!(
+            interpret_csharp_exit_code(None),
+            CSharpExtractionOutcome::Failed
+        );
+    }
 }

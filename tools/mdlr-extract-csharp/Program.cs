@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Xml.Linq;
 using Microsoft.Build.Locator;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -47,13 +48,13 @@ public static class Program
 
     public static async Task<int> Run(string root, string outputDir, ulong generationId)
     {
-        // relPath -> units; files extracted semantically are recorded here so
-        // the syntax-only sweep at the end picks up only what's left over.
+        // relPath -> units; physical files extracted semantically are recorded
+        // here so the syntax-only sweep picks up only genuinely uncovered files.
         var results = new Dictionary<string, List<Unit>>();
-
+        var extractedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var msbuildAvailable = RegisterMsBuild();
         if (msbuildAvailable)
-            await ExtractSemantic(root, results);
+            await ExtractSemantic(root, results, extractedFiles);
 
         // Syntax-only fallback for every analyzable .cs file not covered by a
         // loadable project (or everything, when no .NET SDK is available).
@@ -61,6 +62,7 @@ public static class Program
         {
             var relPath = RelPath(root, file);
             if (results.ContainsKey(relPath)) continue;
+            if (!extractedFiles.Add(CanonicalPath(file))) continue;
             ExtractSyntaxOnly(file, relPath, results);
         }
 
@@ -69,7 +71,7 @@ public static class Program
             if (units.Count == 0) continue;
             WriteEntry(outputDir, root, relPath, units, generationId);
         }
-        return 0;
+        return results.Values.SelectMany(units => units).Any(unit => unit.Partial) ? 2 : 0;
     }
 
     static bool RegisterMsBuild()
@@ -78,7 +80,11 @@ public static class Program
         {
             if (MSBuildLocator.IsRegistered) return true;
             var instances = MSBuildLocator.QueryVisualStudioInstances().ToList();
-            if (instances.Count == 0) return false;
+            if (instances.Count == 0)
+            {
+                Console.Error.WriteLine("warning: no .NET SDK/MSBuild instance found, using syntax-only extraction");
+                return false;
+            }
             MSBuildLocator.RegisterInstance(instances.OrderByDescending(i => i.Version).First());
             return true;
         }
@@ -89,7 +95,10 @@ public static class Program
         }
     }
 
-    static async Task ExtractSemantic(string root, Dictionary<string, List<Unit>> results)
+    static async Task ExtractSemantic(
+        string root,
+        Dictionary<string, List<Unit>> results,
+        HashSet<string> extractedFiles)
     {
         using var workspace = MSBuildWorkspace.Create();
         workspace.WorkspaceFailed += (_, e) =>
@@ -99,17 +108,12 @@ public static class Program
         };
 
         var loadedProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var solutions = FindFiles(root, ".sln").Concat(FindFiles(root, ".slnx"));
-        foreach (var solutionPath in solutions)
+        foreach (var solutionPath in FindFiles(root, ".sln"))
         {
             try
             {
                 var solution = await workspace.OpenSolutionAsync(solutionPath);
-                foreach (var project in solution.Projects)
-                {
-                    if (project.FilePath is { } fp) loadedProjects.Add(Path.GetFullPath(fp));
-                    await ExtractProject(project, root, results);
-                }
+                await ExtractWorkspaceProjects(solution, root, results, extractedFiles, loadedProjects);
             }
             catch (Exception e)
             {
@@ -117,14 +121,16 @@ public static class Program
             }
         }
 
+        foreach (var solutionPath in FindFiles(root, ".slnx"))
+            await ExtractSlnxProjects(workspace, solutionPath, root, results, extractedFiles, loadedProjects);
+
         foreach (var projectPath in FindFiles(root, ".csproj"))
         {
             if (loadedProjects.Contains(Path.GetFullPath(projectPath))) continue;
             try
             {
-                var project = await workspace.OpenProjectAsync(projectPath);
-                loadedProjects.Add(Path.GetFullPath(projectPath));
-                await ExtractProject(project, root, results);
+                await workspace.OpenProjectAsync(projectPath);
+                await ExtractWorkspaceProjects(workspace.CurrentSolution, root, results, extractedFiles, loadedProjects);
             }
             catch (Exception e)
             {
@@ -133,7 +139,76 @@ public static class Program
         }
     }
 
-    static async Task ExtractProject(Project project, string root, Dictionary<string, List<Unit>> results)
+    static async Task ExtractSlnxProjects(
+        MSBuildWorkspace workspace,
+        string solutionPath,
+        string root,
+        Dictionary<string, List<Unit>> results,
+        HashSet<string> extractedFiles,
+        HashSet<string> loadedProjects)
+    {
+        string[] projectPaths;
+        try
+        {
+            projectPaths = ReadSlnxProjectPaths(solutionPath).ToArray();
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"warning: failed to read {solutionPath}: {e.Message}");
+            return;
+        }
+
+        foreach (var projectPath in projectPaths)
+        {
+            if (loadedProjects.Contains(projectPath)) continue;
+            try
+            {
+                await workspace.OpenProjectAsync(projectPath);
+                await ExtractWorkspaceProjects(workspace.CurrentSolution, root, results, extractedFiles, loadedProjects);
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"warning: failed to load {projectPath} from {solutionPath}: {e.Message}");
+            }
+        }
+    }
+
+    static IEnumerable<string> ReadSlnxProjectPaths(string solutionPath)
+    {
+        var baseDir = Path.GetDirectoryName(solutionPath) ?? ".";
+        var doc = XDocument.Load(solutionPath);
+        foreach (var element in doc.Descendants().Where(e => e.Name.LocalName == "Project"))
+        {
+            var path = element.Attribute("Path")?.Value;
+            if (string.IsNullOrWhiteSpace(path)) continue;
+
+            var projectPath = path.Replace('\\', Path.DirectorySeparatorChar);
+            var fullPath = Path.GetFullPath(Path.Combine(baseDir, projectPath));
+            if (fullPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+                yield return fullPath;
+        }
+    }
+
+    static async Task ExtractWorkspaceProjects(
+        Solution solution,
+        string root,
+        Dictionary<string, List<Unit>> results,
+        HashSet<string> extractedFiles,
+        HashSet<string> loadedProjects)
+    {
+        foreach (var project in solution.Projects)
+        {
+            if (project.FilePath is not { } fp) continue;
+            if (!loadedProjects.Add(Path.GetFullPath(fp))) continue;
+            await ExtractProject(project, root, results, extractedFiles);
+        }
+    }
+
+    static async Task ExtractProject(
+        Project project,
+        string root,
+        Dictionary<string, List<Unit>> results,
+        HashSet<string> extractedFiles)
     {
         var compilation = await project.GetCompilationAsync();
         if (compilation is null) return;
@@ -146,6 +221,7 @@ public static class Program
             if (rel.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(rel)) continue;
             var relPath = rel.Replace('\\', '/');
             if (results.ContainsKey(relPath)) continue; // multi-targeting / shared files
+            if (!extractedFiles.Add(CanonicalPath(path))) continue; // symlinked/shared files
             if (IsExcludedPath(relPath)) continue;
 
             if (await tree.GetRootAsync() is not CompilationUnitSyntax syntaxRoot) continue;
@@ -239,6 +315,54 @@ public static class Program
 
     static string RelPath(string root, string file) =>
         Path.GetRelativePath(root, file).Replace('\\', '/');
+
+    static string CanonicalPath(string path) => CanonicalPath(path, depth: 0);
+
+    static string CanonicalPath(string path, int depth)
+    {
+        var fullPath = Path.GetFullPath(path);
+        try
+        {
+            if (depth > 32) return fullPath;
+
+            var root = Path.GetPathRoot(fullPath);
+            if (string.IsNullOrEmpty(root)) return fullPath;
+
+            var relative = Path.GetRelativePath(root, fullPath);
+            var segments = relative.Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                StringSplitOptions.RemoveEmptyEntries);
+            var current = root;
+            for (var i = 0; i < segments.Length; i++)
+            {
+                var segment = segments[i];
+                if (segment == ".") continue;
+                current = Path.Combine(current, segment);
+
+                var attrs = File.GetAttributes(current);
+                if ((attrs & FileAttributes.ReparsePoint) == 0) continue;
+
+                var target = (attrs & FileAttributes.Directory) != 0
+                    ? new DirectoryInfo(current).ResolveLinkTarget(returnFinalTarget: true)?.FullName
+                    : new FileInfo(current).ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+                if (target is null) continue;
+
+                var resolvedTarget = Path.IsPathRooted(target)
+                    ? Path.GetFullPath(target)
+                    : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(current) ?? root, target));
+
+                var resolvedPath = resolvedTarget;
+                foreach (var remaining in segments.Skip(i + 1))
+                    resolvedPath = Path.Combine(resolvedPath, remaining);
+                return CanonicalPath(resolvedPath, depth + 1);
+            }
+            return Path.GetFullPath(current);
+        }
+        catch (Exception)
+        {
+            return fullPath;
+        }
+    }
 
     static void WriteEntry(string outputDir, string root, string relPath, List<Unit> units, ulong generationId)
     {
