@@ -11,6 +11,9 @@ use std::path::Path;
 const VALID_METRICS: &[&str] = &[
     "fan_in",
     "fan_out",
+    "refactor_priority_score",
+    "refactor_target_score",
+    "main_sequence_refactor_pressure",
     "function_size",
     "params",
     "cyclomatic",

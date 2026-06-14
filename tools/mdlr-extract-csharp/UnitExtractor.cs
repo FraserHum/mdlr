@@ -58,7 +58,7 @@ public sealed class UnitExtractor
             Kind = "Struct",
             File = _relPath,
             Span = MakeSpan(type.Span),
-            Tags = [TypeTag(type)],
+            Tags = TypeTags(type),
         });
 
         if (type is TypeDeclarationSyntax { ParameterList: { } primaryParams } td)
@@ -448,6 +448,15 @@ public sealed class UnitExtractor
             r.ClassOrStructKeyword.IsKind(SyntaxKind.StructKeyword) ? "record-struct" : "record",
         _ => "type",
     };
+
+    static List<string> TypeTags(BaseTypeDeclarationSyntax type)
+    {
+        var tags = new List<string> { TypeTag(type) };
+        if ((type is ClassDeclarationSyntax || type is RecordDeclarationSyntax)
+            && type.Modifiers.Any(SyntaxKind.AbstractKeyword))
+            tags.Add("abstract");
+        return tags;
+    }
 
     // ---------- syntax-fallback display ----------
 

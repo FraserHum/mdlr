@@ -94,6 +94,7 @@ pub struct ThresholdsConfig {
     pub fan_in_mean: MetricThresholds,
     pub fan_out_max: MetricThresholds,
     pub fan_out_mean: MetricThresholds,
+    pub main_sequence_distance: MetricThresholds,
     pub function_size: TwoSidedThresholds,
     pub params: MetricThresholds,
     pub cyclomatic: MetricThresholds,
@@ -133,6 +134,7 @@ const DEFAULT_THRESHOLDS: ThresholdsConfig = ThresholdsConfig {
     fan_in_mean: mt(0.5, 1.0, 2.0, 3.0),
     fan_out_max: mt(3.0, 5.0, 8.0, 12.0),
     fan_out_mean: mt(0.5, 1.0, 2.0, 3.0),
+    main_sequence_distance: mt(15.0, 30.0, 50.0, 75.0),
     function_size: DEFAULT_FUNCTION_SIZE,
     params: mt(3.0, 5.0, 7.0, 10.0),
     cyclomatic: mt(5.0, 10.0, 20.0, 30.0),
@@ -184,6 +186,12 @@ impl ThresholdsConfig {
 
     /// Get thresholds for a single metric by canonical name.
     pub fn get(&self, name: &str) -> Option<MetricThresholds> {
+        if name == "main_sequence_refactor_pressure"
+            || name == "refactor_target_score"
+            || name == "refactor_priority_score"
+        {
+            return Some(self.main_sequence_distance.clone());
+        }
         self.by_name().remove(name)
     }
 }
@@ -226,6 +234,10 @@ pub const METRIC_NAMES: &[&str] = &[
     "dag_density",
     "fan_in",
     "fan_out",
+    "main_sequence_distance",
+    "main_sequence_refactor_pressure",
+    "refactor_target_score",
+    "refactor_priority_score",
     "function_size",
     "params",
     "cyclomatic",

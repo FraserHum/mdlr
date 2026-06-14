@@ -11,6 +11,25 @@ public sealed class FileCacheEntry
     [JsonPropertyName("cached_at")] public required ulong CachedAt { get; init; }
 }
 
+public sealed class CSharpProjectFactsFile
+{
+    [JsonPropertyName("cached_at")] public required ulong CachedAt { get; init; }
+    [JsonPropertyName("projects")] public required List<CSharpProjectFacts> Projects { get; init; }
+}
+
+public sealed class CSharpProjectFacts
+{
+    [JsonPropertyName("project_path")] public required string ProjectPath { get; init; }
+    [JsonPropertyName("source_files")] public List<string> SourceFiles { get; set; } = [];
+    [JsonPropertyName("project_references")] public List<string> ProjectReferences { get; set; } = [];
+    [JsonPropertyName("output_type")] public string? OutputType { get; set; }
+    [JsonPropertyName("is_test_project")] public bool? IsTestProject { get; set; }
+    [JsonPropertyName("has_microsoft_net_test_sdk")] public bool HasMicrosoftNetTestSdk { get; set; }
+    [JsonPropertyName("test_package_references")] public List<string> TestPackageReferences { get; set; } = [];
+    [JsonPropertyName("explicit_test_project")] public bool ExplicitTestProject { get; set; }
+    [JsonPropertyName("reachable_from_executable")] public bool ReachableFromExecutable { get; set; }
+}
+
 /// Matches the Rust Unit struct (crates/mdlr-core/src/graph/types.rs).
 public sealed class Unit
 {

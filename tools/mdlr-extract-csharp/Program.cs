@@ -12,6 +12,17 @@ namespace MdlrExtractCSharp;
 public static class Program
 {
     static readonly string[] SkipDirs = ["bin", "obj", "node_modules", ".git", ".mdlr"];
+    static readonly string[] TestPackageReferences =
+    [
+        "Microsoft.NET.Test.Sdk",
+        "xunit",
+        "xunit.v3",
+        "NUnit",
+        "NUnit3TestAdapter",
+        "MSTest.TestFramework",
+        "MSTest.TestAdapter",
+    ];
+    static readonly TimeSpan DefaultSemanticTimeout = TimeSpan.FromSeconds(15);
 
     public static async Task<int> Main(string[] args)
     {
@@ -52,9 +63,25 @@ public static class Program
         // here so the syntax-only sweep picks up only genuinely uncovered files.
         var results = new Dictionary<string, List<Unit>>();
         var extractedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var projectFacts = ReadProjectFacts(root);
         var msbuildAvailable = RegisterMsBuild();
-        if (msbuildAvailable)
-            await ExtractSemantic(root, results, extractedFiles);
+        var semanticTimeout = GetSemanticTimeout();
+        if (msbuildAvailable && semanticTimeout > TimeSpan.Zero)
+        {
+            try
+            {
+                await ExtractSemantic(root, results, extractedFiles, projectFacts, semanticTimeout);
+            }
+            catch (OperationCanceledException)
+            {
+                Console.Error.WriteLine(
+                    $"warning: C# semantic extraction exceeded {semanticTimeout.TotalSeconds:0.#}s, using syntax-only extraction for remaining files");
+            }
+        }
+        else if (msbuildAvailable)
+        {
+            Console.Error.WriteLine("warning: C# semantic extraction disabled, using syntax-only extraction");
+        }
 
         // Syntax-only fallback for every analyzable .cs file not covered by a
         // loadable project (or everything, when no .NET SDK is available).
@@ -71,7 +98,20 @@ public static class Program
             if (units.Count == 0) continue;
             WriteEntry(outputDir, root, relPath, units, generationId);
         }
+        MarkExecutableReachability(projectFacts);
+        WriteProjectFacts(outputDir, projectFacts, generationId);
         return results.Values.SelectMany(units => units).Any(unit => unit.Partial) ? 2 : 0;
+    }
+
+    static TimeSpan GetSemanticTimeout()
+    {
+        var value = Environment.GetEnvironmentVariable("MDLR_CSHARP_SEMANTIC_TIMEOUT_SECONDS");
+        if (string.IsNullOrWhiteSpace(value)) return DefaultSemanticTimeout;
+        if (double.TryParse(value, out var seconds) && seconds >= 0)
+            return TimeSpan.FromSeconds(seconds);
+        Console.Error.WriteLine(
+            $"warning: invalid MDLR_CSHARP_SEMANTIC_TIMEOUT_SECONDS value '{value}', using {DefaultSemanticTimeout.TotalSeconds:0.#}s");
+        return DefaultSemanticTimeout;
     }
 
     static bool RegisterMsBuild()
@@ -79,13 +119,7 @@ public static class Program
         try
         {
             if (MSBuildLocator.IsRegistered) return true;
-            var instances = MSBuildLocator.QueryVisualStudioInstances().ToList();
-            if (instances.Count == 0)
-            {
-                Console.Error.WriteLine("warning: no .NET SDK/MSBuild instance found, using syntax-only extraction");
-                return false;
-            }
-            MSBuildLocator.RegisterInstance(instances.OrderByDescending(i => i.Version).First());
+            MSBuildLocator.RegisterDefaults();
             return true;
         }
         catch (Exception e)
@@ -98,9 +132,15 @@ public static class Program
     static async Task ExtractSemantic(
         string root,
         Dictionary<string, List<Unit>> results,
-        HashSet<string> extractedFiles)
+        HashSet<string> extractedFiles,
+        Dictionary<string, CSharpProjectFacts> projectFacts,
+        TimeSpan semanticTimeout)
     {
-        using var workspace = MSBuildWorkspace.Create();
+        using var cancellation = new CancellationTokenSource(semanticTimeout);
+        var workspace = MSBuildWorkspace.Create();
+        var disposeWorkspace = true;
+        try
+        {
         workspace.WorkspaceFailed += (_, e) =>
         {
             if (e.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
@@ -112,9 +152,12 @@ public static class Program
         {
             try
             {
-                var solution = await workspace.OpenSolutionAsync(solutionPath);
-                await ExtractWorkspaceProjects(solution, root, results, extractedFiles, loadedProjects);
+                var solution = await AwaitSemantic(
+                    () => workspace.OpenSolutionAsync(solutionPath, progress: null, cancellation.Token),
+                    cancellation.Token);
+            await ExtractWorkspaceProjects(solution, root, results, extractedFiles, loadedProjects, projectFacts, cancellation.Token);
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception e)
             {
                 Console.Error.WriteLine($"warning: failed to load {solutionPath}: {e.Message}");
@@ -122,20 +165,35 @@ public static class Program
         }
 
         foreach (var solutionPath in FindFiles(root, ".slnx"))
-            await ExtractSlnxProjects(workspace, solutionPath, root, results, extractedFiles, loadedProjects);
+            await ExtractSlnxProjects(workspace, solutionPath, root, results, extractedFiles, loadedProjects, projectFacts, cancellation.Token);
 
         foreach (var projectPath in FindFiles(root, ".csproj"))
         {
+            cancellation.Token.ThrowIfCancellationRequested();
             if (loadedProjects.Contains(Path.GetFullPath(projectPath))) continue;
             try
             {
-                await workspace.OpenProjectAsync(projectPath);
-                await ExtractWorkspaceProjects(workspace.CurrentSolution, root, results, extractedFiles, loadedProjects);
+                await AwaitSemantic(
+                    () => workspace.OpenProjectAsync(projectPath, progress: null, cancellation.Token),
+                    cancellation.Token);
+                await ExtractWorkspaceProjects(workspace.CurrentSolution, root, results, extractedFiles, loadedProjects, projectFacts, cancellation.Token);
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception e)
             {
                 Console.Error.WriteLine($"warning: failed to load {projectPath}: {e.Message}");
             }
+        }
+        }
+        catch (OperationCanceledException)
+        {
+            disposeWorkspace = false;
+            throw;
+        }
+        finally
+        {
+            if (disposeWorkspace)
+                workspace.Dispose();
         }
     }
 
@@ -145,7 +203,9 @@ public static class Program
         string root,
         Dictionary<string, List<Unit>> results,
         HashSet<string> extractedFiles,
-        HashSet<string> loadedProjects)
+        HashSet<string> loadedProjects,
+        Dictionary<string, CSharpProjectFacts> projectFacts,
+        CancellationToken cancellationToken)
     {
         string[] projectPaths;
         try
@@ -163,9 +223,12 @@ public static class Program
             if (loadedProjects.Contains(projectPath)) continue;
             try
             {
-                await workspace.OpenProjectAsync(projectPath);
-                await ExtractWorkspaceProjects(workspace.CurrentSolution, root, results, extractedFiles, loadedProjects);
+                await AwaitSemantic(
+                    () => workspace.OpenProjectAsync(projectPath, progress: null, cancellationToken),
+                    cancellationToken);
+                await ExtractWorkspaceProjects(workspace.CurrentSolution, root, results, extractedFiles, loadedProjects, projectFacts, cancellationToken);
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception e)
             {
                 Console.Error.WriteLine($"warning: failed to load {projectPath} from {solutionPath}: {e.Message}");
@@ -194,24 +257,204 @@ public static class Program
         string root,
         Dictionary<string, List<Unit>> results,
         HashSet<string> extractedFiles,
-        HashSet<string> loadedProjects)
+        HashSet<string> loadedProjects,
+        Dictionary<string, CSharpProjectFacts> projectFacts,
+        CancellationToken cancellationToken)
     {
         foreach (var project in solution.Projects)
         {
             if (project.FilePath is not { } fp) continue;
             if (!loadedProjects.Add(Path.GetFullPath(fp))) continue;
-            await ExtractProject(project, root, results, extractedFiles);
+            RecordProjectDocuments(project, root, projectFacts);
+            await ExtractProject(project, root, results, extractedFiles, projectFacts, cancellationToken);
         }
+    }
+
+    static Dictionary<string, CSharpProjectFacts> ReadProjectFacts(string root)
+    {
+        var facts = new Dictionary<string, CSharpProjectFacts>(StringComparer.OrdinalIgnoreCase);
+        foreach (var projectPath in FindFiles(root, ".csproj"))
+        {
+            var relPath = RelPath(root, projectPath);
+            facts[relPath] = ReadProjectFacts(root, projectPath, relPath);
+        }
+        return facts;
+    }
+
+    static CSharpProjectFacts ReadProjectFacts(string root, string projectPath, string relPath)
+    {
+        var fact = new CSharpProjectFacts { ProjectPath = relPath };
+        try
+        {
+            var doc = XDocument.Load(projectPath);
+            fact.OutputType = NormalizeOutputType(
+                doc.Descendants()
+                    .FirstOrDefault(e => e.Name.LocalName == "OutputType")
+                    ?.Value);
+            fact.IsTestProject = ParseBool(
+                doc.Descendants()
+                    .FirstOrDefault(e => e.Name.LocalName == "IsTestProject")
+                    ?.Value);
+            fact.TestPackageReferences = doc
+                .Descendants()
+                .Where(e => e.Name.LocalName == "PackageReference")
+                .Select(e => e.Attribute("Include")?.Value ?? e.Attribute("Update")?.Value)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Where(value => TestPackageReferences.Contains(
+                    value!,
+                    StringComparer.OrdinalIgnoreCase))
+                .Select(value => value!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            fact.HasMicrosoftNetTestSdk = fact.TestPackageReferences.Any(
+                value => string.Equals(
+                    value,
+                    "Microsoft.NET.Test.Sdk",
+                    StringComparison.OrdinalIgnoreCase));
+            fact.ExplicitTestProject =
+                fact.IsTestProject == true || fact.TestPackageReferences.Count > 0;
+            fact.ProjectReferences = doc
+                .Descendants()
+                .Where(e => e.Name.LocalName == "ProjectReference")
+                .Select(e => e.Attribute("Include")?.Value)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => ResolveProjectReference(root, projectPath, value!))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"warning: failed to read project facts for {relPath}: {e.Message}");
+        }
+
+        fact.OutputType ??= "Library";
+        return fact;
+    }
+
+    static string ResolveProjectReference(string root, string projectPath, string reference)
+    {
+        var normalizedReference = reference
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar);
+        return RelPath(
+            root,
+            Path.GetFullPath(Path.Combine(
+                Path.GetDirectoryName(projectPath) ?? root,
+                normalizedReference)));
+    }
+
+    static void RecordProjectDocuments(
+        Project project,
+        string root,
+        Dictionary<string, CSharpProjectFacts> projectFacts)
+    {
+        if (project.FilePath is not { } projectPath) return;
+        var relProjectPath = RelPath(root, projectPath);
+        if (!projectFacts.TryGetValue(relProjectPath, out var fact))
+        {
+            fact = new CSharpProjectFacts
+            {
+                ProjectPath = relProjectPath,
+                OutputType = NormalizeOutputTypeFromKind(project.CompilationOptions?.OutputKind),
+            };
+            projectFacts[relProjectPath] = fact;
+        }
+        fact.OutputType ??= NormalizeOutputTypeFromKind(
+            project.CompilationOptions?.OutputKind);
+        fact.SourceFiles = project.Documents
+            .Select(doc => doc.FilePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            .Select(path => Path.GetRelativePath(root, path!))
+            .Where(rel => !rel.StartsWith("..", StringComparison.Ordinal) && !Path.IsPathRooted(rel))
+            .Select(rel => rel.Replace('\\', '/'))
+            .Where(rel => !IsExcludedPath(rel))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    static bool? ParseBool(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (bool.TryParse(value.Trim(), out var parsed)) return parsed;
+        return null;
+    }
+
+    static string NormalizeOutputType(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "Library";
+        return value.Trim() switch
+        {
+            var v when string.Equals(v, "Exe", StringComparison.OrdinalIgnoreCase) => "Exe",
+            var v when string.Equals(v, "WinExe", StringComparison.OrdinalIgnoreCase) => "WinExe",
+            var v when string.Equals(v, "Library", StringComparison.OrdinalIgnoreCase) => "Library",
+            var v => v,
+        };
+    }
+
+    static string NormalizeOutputTypeFromKind(OutputKind? kind) =>
+        kind switch
+        {
+            OutputKind.ConsoleApplication => "Exe",
+            OutputKind.WindowsApplication => "WinExe",
+            OutputKind.DynamicallyLinkedLibrary => "Library",
+            _ => "Library",
+        };
+
+    static void MarkExecutableReachability(Dictionary<string, CSharpProjectFacts> projectFacts)
+    {
+        var executableRoots = projectFacts
+            .Values
+            .Where(f => !f.ExplicitTestProject && (f.OutputType == "Exe" || f.OutputType == "WinExe"))
+            .Select(f => f.ProjectPath)
+            .ToList();
+        var stack = new Stack<string>(executableRoots);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        while (stack.Count > 0)
+        {
+            var projectPath = stack.Pop();
+            if (!seen.Add(projectPath)) continue;
+            if (!projectFacts.TryGetValue(projectPath, out var fact)) continue;
+            if (fact.ExplicitTestProject) continue;
+
+            fact.ReachableFromExecutable = true;
+            foreach (var reference in fact.ProjectReferences)
+                stack.Push(reference);
+        }
+    }
+
+    static void WriteProjectFacts(
+        string outputDir,
+        Dictionary<string, CSharpProjectFacts> projectFacts,
+        ulong generationId)
+    {
+        var facts = new CSharpProjectFactsFile
+        {
+            CachedAt = generationId,
+            Projects = projectFacts
+                .Values
+                .OrderBy(f => f.ProjectPath, StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+        };
+        File.WriteAllText(
+            Path.Combine(outputDir, "csharp-projects.json"),
+            JsonSerializer.Serialize(facts, Json.Options));
     }
 
     static async Task ExtractProject(
         Project project,
         string root,
         Dictionary<string, List<Unit>> results,
-        HashSet<string> extractedFiles)
+        HashSet<string> extractedFiles,
+        Dictionary<string, CSharpProjectFacts> projectFacts,
+        CancellationToken cancellationToken)
     {
-        var compilation = await project.GetCompilationAsync();
+        var compilation = await AwaitSemantic(() => project.GetCompilationAsync(cancellationToken), cancellationToken);
         if (compilation is null) return;
+        RecordCompilationOutputKind(project, root, projectFacts, compilation);
 
         foreach (var tree in compilation.SyntaxTrees)
         {
@@ -224,13 +467,39 @@ public static class Program
             if (!extractedFiles.Add(CanonicalPath(path))) continue; // symlinked/shared files
             if (IsExcludedPath(relPath)) continue;
 
-            if (await tree.GetRootAsync() is not CompilationUnitSyntax syntaxRoot) continue;
+            if (await tree.GetRootAsync(cancellationToken) is not CompilationUnitSyntax syntaxRoot) continue;
             if (IsGenerated(syntaxRoot)) continue;
 
             var model = compilation.GetSemanticModel(tree);
-            var text = await tree.GetTextAsync();
+            var text = await tree.GetTextAsync(cancellationToken);
             results[relPath] = UnitExtractor.Extract(syntaxRoot, model, text, relPath, root);
         }
+    }
+
+    static void RecordCompilationOutputKind(
+        Project project,
+        string root,
+        Dictionary<string, CSharpProjectFacts> projectFacts,
+        Compilation compilation)
+    {
+        if (project.FilePath is not { } projectPath) return;
+        var relProjectPath = RelPath(root, projectPath);
+        if (!projectFacts.TryGetValue(relProjectPath, out var fact))
+        {
+            fact = new CSharpProjectFacts { ProjectPath = relProjectPath };
+            projectFacts[relProjectPath] = fact;
+        }
+        fact.OutputType = NormalizeOutputTypeFromKind(compilation.Options.OutputKind);
+    }
+
+    static async Task<T> AwaitSemantic<T>(Func<Task<T>> operation, CancellationToken cancellationToken)
+    {
+        var task = Task.Run(operation);
+        var delay = Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        var completed = await Task.WhenAny(task, delay);
+        if (completed == task)
+            return await task;
+        throw new OperationCanceledException(cancellationToken);
     }
 
     static void ExtractSyntaxOnly(string file, string relPath, Dictionary<string, List<Unit>> results)

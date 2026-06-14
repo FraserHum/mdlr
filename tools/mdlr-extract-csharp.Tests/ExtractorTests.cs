@@ -6,7 +6,14 @@ namespace MdlrExtractCSharp.Tests;
 
 public static class Fixture
 {
-    public static Dictionary<string, FileCacheEntry> Run(string root, int expectedExit = 0)
+    public sealed record ExtractionResult(
+        Dictionary<string, FileCacheEntry> Entries,
+        CSharpProjectFactsFile ProjectFacts);
+
+    public static Dictionary<string, FileCacheEntry> Run(string root, int expectedExit = 0) =>
+        RunDetailed(root, expectedExit).Entries;
+
+    public static ExtractionResult RunDetailed(string root, int expectedExit = 0)
     {
         var outDir = Directory.CreateTempSubdirectory("mdlr-cs-out").FullName;
         var exit = Program.Run(root, outDir, 7777).GetAwaiter().GetResult();
@@ -15,10 +22,14 @@ public static class Fixture
         var results = new Dictionary<string, FileCacheEntry>();
         foreach (var file in Directory.EnumerateFiles(outDir, "*.json", SearchOption.AllDirectories))
         {
+            if (Path.GetFileName(file) == "csharp-projects.json") continue;
             var entry = JsonSerializer.Deserialize<FileCacheEntry>(File.ReadAllText(file))!;
             results[entry.SourcePath] = entry;
         }
-        return results;
+        var factsPath = Path.Combine(outDir, "csharp-projects.json");
+        Assert.True(File.Exists(factsPath));
+        var facts = JsonSerializer.Deserialize<CSharpProjectFactsFile>(File.ReadAllText(factsPath))!;
+        return new ExtractionResult(results, facts);
     }
 
     public static string WriteProject(Dictionary<string, string> files)
@@ -48,6 +59,7 @@ public static class Fixture
 public sealed class SemanticFixture
 {
     public Dictionary<string, FileCacheEntry> Results { get; }
+    public CSharpProjectFactsFile ProjectFacts { get; }
 
     public SemanticFixture()
     {
@@ -81,6 +93,16 @@ public sealed class SemanticFixture
                 public interface IShape
                 {
                     double Area();
+                }
+
+                public abstract class ShapeBase
+                {
+                    public abstract double Perimeter();
+                }
+
+                public abstract record ShapeSpec
+                {
+                    public abstract double Area();
                 }
 
                 public class Circle : IShape
@@ -183,15 +205,22 @@ public sealed class SemanticFixture
                     Console.WriteLine(circle.Describe(1));
                 """,
         });
-        Results = Fixture.Run(root);
+        var result = Fixture.RunDetailed(root);
+        Results = result.Entries;
+        ProjectFacts = result.ProjectFacts;
     }
 }
 
 public sealed class SemanticTests : IClassFixture<SemanticFixture>
 {
     readonly Dictionary<string, FileCacheEntry> _r;
+    readonly CSharpProjectFactsFile _projectFacts;
 
-    public SemanticTests(SemanticFixture fixture) => _r = fixture.Results;
+    public SemanticTests(SemanticFixture fixture)
+    {
+        _r = fixture.Results;
+        _projectFacts = fixture.ProjectFacts;
+    }
 
     List<Unit> Units(string relPath) => _r[relPath].Units;
 
@@ -202,6 +231,121 @@ public sealed class SemanticTests : IClassFixture<SemanticFixture>
     public void GenerationIdIsStamped()
     {
         Assert.All(_r.Values, e => Assert.Equal(7777UL, e.CachedAt));
+        Assert.Equal(7777UL, _projectFacts.CachedAt);
+    }
+
+    [Fact]
+    public void ProjectFactsCaptureExecutableReachability()
+    {
+        var lib = _projectFacts.Projects.Single(p => p.ProjectPath == "src/Lib/Lib.csproj");
+        var app = _projectFacts.Projects.Single(p => p.ProjectPath == "src/App/App.csproj");
+
+        Assert.Equal("Library", lib.OutputType);
+        Assert.Equal("Exe", app.OutputType);
+        Assert.False(lib.ExplicitTestProject);
+        Assert.False(app.ExplicitTestProject);
+        Assert.True(lib.ReachableFromExecutable);
+        Assert.True(app.ReachableFromExecutable);
+        Assert.Contains("src/Lib/Shapes.cs", lib.SourceFiles);
+        Assert.Contains("src/App/Program.cs", app.SourceFiles);
+        Assert.Contains("src/Lib/Lib.csproj", app.ProjectReferences);
+    }
+
+    [Fact]
+    public void SemanticOutputKindOverridesRawProjectXml()
+    {
+        var root = Fixture.WriteProject(new()
+        {
+            ["Directory.Build.targets"] = """
+                <Project>
+                  <PropertyGroup>
+                    <OutputType>Exe</OutputType>
+                  </PropertyGroup>
+                </Project>
+                """,
+            ["src/App/App.csproj"] = """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <OutputType>Library</OutputType>
+                    <TargetFramework>net8.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """,
+            ["src/App/Program.cs"] = """
+                Console.WriteLine("hello");
+                """,
+        });
+
+        var result = Fixture.RunDetailed(root);
+        var project = result.ProjectFacts.Projects.Single();
+
+        Assert.Equal("Exe", project.OutputType);
+        Assert.True(project.ReachableFromExecutable);
+    }
+
+    [Fact]
+    public void IsTestProjectMarksExplicitTestProject()
+    {
+        var root = Fixture.WriteProject(new()
+        {
+            ["tests/Example.Tests/Example.Tests.csproj"] = """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net8.0</TargetFramework>
+                    <IsTestProject>true</IsTestProject>
+                  </PropertyGroup>
+                </Project>
+                """,
+            ["tests/Example.Tests/ExampleTests.cs"] = """
+                namespace Example.Tests;
+
+                public class ExampleTests
+                {
+                    public void Passes() { }
+                }
+                """,
+        });
+
+        var result = Fixture.RunDetailed(root);
+        var project = result.ProjectFacts.Projects.Single();
+
+        Assert.True(project.IsTestProject);
+        Assert.True(project.ExplicitTestProject);
+        Assert.False(project.ReachableFromExecutable);
+    }
+
+    [Fact]
+    public void TestFrameworkPackageMarksExplicitTestProject()
+    {
+        var root = Fixture.WriteProject(new()
+        {
+            ["tests/Example.Tests/Example.Tests.csproj"] = """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net8.0</TargetFramework>
+                    <OutputType>Exe</OutputType>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <PackageReference Include="xunit.v3" Version="3.2.2" />
+                  </ItemGroup>
+                </Project>
+                """,
+            ["tests/Example.Tests/ExampleTests.cs"] = """
+                namespace Example.Tests;
+
+                public class ExampleTests
+                {
+                    public void Passes() { }
+                }
+                """,
+        });
+
+        var result = Fixture.RunDetailed(root);
+        var project = result.ProjectFacts.Projects.Single();
+
+        Assert.Contains("xunit.v3", project.TestPackageReferences);
+        Assert.True(project.ExplicitTestProject);
+        Assert.False(project.ReachableFromExecutable);
     }
 
     [Fact]
@@ -217,6 +361,13 @@ public sealed class SemanticTests : IClassFixture<SemanticFixture>
         Assert.Equal(["interface"], Find("src/Lib/Shapes.cs", "Lib.IShape").Tags);
         Assert.Equal(["class"], Find("src/Lib/Shapes.cs", "Lib.Circle").Tags);
         Assert.Equal(["record"], Find("src/Lib/Shapes.cs", "Lib.Point").Tags);
+    }
+
+    [Fact]
+    public void AbstractClassAndRecordAddAbstractTag()
+    {
+        Assert.Equal(["class", "abstract"], Find("src/Lib/Shapes.cs", "Lib.ShapeBase").Tags);
+        Assert.Equal(["record", "abstract"], Find("src/Lib/Shapes.cs", "Lib.ShapeSpec").Tags);
     }
 
     [Fact]
@@ -444,6 +595,7 @@ public sealed class FallbackAndSolutionTests
         var results = new Dictionary<string, FileCacheEntry>();
         foreach (var file in Directory.EnumerateFiles(outDir, "*.json", SearchOption.AllDirectories))
         {
+            if (Path.GetFileName(file) == "csharp-projects.json") continue;
             var entry = JsonSerializer.Deserialize<FileCacheEntry>(File.ReadAllText(file))!;
             results[entry.SourcePath] = entry;
         }
@@ -535,6 +687,7 @@ public sealed class FallbackAndSolutionTests
         var results = new Dictionary<string, FileCacheEntry>();
         foreach (var file in Directory.EnumerateFiles(outDir, "*.json", SearchOption.AllDirectories))
         {
+            if (Path.GetFileName(file) == "csharp-projects.json") continue;
             var entry = JsonSerializer.Deserialize<FileCacheEntry>(File.ReadAllText(file))!;
             results[entry.SourcePath] = entry;
         }

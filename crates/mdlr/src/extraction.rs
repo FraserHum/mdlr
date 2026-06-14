@@ -4,6 +4,9 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 
 use crate::cache::{CacheStore, FileCacheEntry};
+use mdlr_metrics::CSharpProjectFacts;
+
+pub const CSHARP_PROJECT_FACTS_FILE: &str = "csharp-projects.json";
 
 /// A language mdlr can extract Units from, identified by the file extensions
 /// it owns. One `const` per language (see [`LANGUAGES`]).
@@ -361,6 +364,24 @@ pub fn load_cache_dir(
     Ok((entries, tokens))
 }
 
+pub fn load_csharp_project_facts(
+    store: &CacheStore,
+    generation_id: u64,
+) -> Result<Option<CSharpProjectFacts>> {
+    let path = store.cache_dir().join(CSHARP_PROJECT_FACTS_FILE);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let facts: CSharpProjectFacts = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse {}", path.display()))?;
+    if facts.cached_at < generation_id {
+        return Ok(None);
+    }
+    Ok(Some(facts))
+}
+
 /// Recursively load FileCacheEntry JSON files from a directory.
 #[tracing::instrument(name = "load_cache", skip_all)]
 pub fn load_entries_from_dir(
@@ -376,6 +397,11 @@ pub fn load_entries_from_dir(
         if path.is_dir() {
             load_entries_from_dir(&path, entries)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            if path.file_name().and_then(|name| name.to_str())
+                == Some(CSHARP_PROJECT_FACTS_FILE)
+            {
+                continue;
+            }
             let content =
                 std::fs::read_to_string(&path).with_context(|| {
                     format!("Failed to read {}", path.display())

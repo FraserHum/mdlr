@@ -51,6 +51,7 @@ mdlr metrics get cyclomatic
 
 - **fan_out**: Dependencies a unit has. High = too many responsibilities
 - **fan_in**: Units depending on this. Very high = potential bottleneck
+- **refactor_priority_score** (C# only): Directory module refactor priority, 0-100. Starts from graph-derived `refactor_target_score`, then applies conservative C# project-context weighting from guaranteed project facts only. `main_sequence_distance`, `main_sequence_refactor_pressure`, and raw `refactor_target_score` stay in JSON for diagnosis
 - **function_size**: Lines of code in a function. Two-sided: high = hard to understand/test (split it); low (1-2 lines, flagged only when the function has exactly one caller) = a pass-through adding indirection without abstraction (inline it into its caller). Tiny functions with zero or multiple callers are never flagged — do not inline trait-required methods, public API accessors, or shared helpers
 - **file_loc**: Lines of code in a file. High = hard to navigate/maintain
 - **cyclomatic**: Branch complexity. High = hard to test/maintain

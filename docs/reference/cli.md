@@ -40,6 +40,14 @@ Diff mode only filters what is *displayed*: metrics are always computed over the
 
 Running `check` extracts all files and writes results to the cache.
 
+For C# projects, `check` also reports
+`refactor_priority_score` by directory module. Text output shows only modules
+with cross-module dependencies; JSON output includes a
+`metrics.main_sequence` object with raw distance, architecture pressure, raw
+target-score, and weighted priority-score distributions plus per-module
+`abstractness`, `instability`, `ca`, `ce`, type counts, `distance`, zone,
+pressure, payoff, effort, project context, target scores, and priority scores.
+
 **Examples:**
 
 ```bash

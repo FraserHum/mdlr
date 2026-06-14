@@ -160,6 +160,7 @@ Use the canonical names from `mdlr metrics ls`. See [Configuration](reference/co
 - [DAG Density](metrics/dag-density.md) — how connected the dependency graph is overall
 - [Fan-In](metrics/fan-in.md) — how many units depend on each unit
 - [Fan-Out](metrics/fan-out.md) — how many units each unit depends on
+- [Main Sequence Distance](metrics/main-sequence-distance.md) — C# directory module distance from abstractness/instability balance and weighted refactor-priority ranking
 - [Complexity](metrics/complexity.md) — function size, parameters, cyclomatic complexity, max scope
 - [Cognitive Complexity](metrics/cognitive-complexity.md) — nesting-aware complexity metric
 - [File LOC](metrics/file-loc.md) — lines of code per file

@@ -9,14 +9,15 @@ use crate::display_scope::{self, DisplayScope};
 use crate::extraction::{
     extract_csharp, extract_go, extract_py, extract_rust, extract_ts,
     has_csharp_project, has_python_project, has_ts_files,
+    load_csharp_project_facts,
 };
 use crate::find_project_root;
 use crate::progress::CheckProgress;
 use crate::timing;
 use mdlr_core::{Graph, Unit, UnitKind, build_with_progress as build_graph};
 use mdlr_metrics::{
-    ComplexityMetrics, CoverageMetrics, FileLocMetrics, LcovData,
-    StructMetrics, StructuralMetrics,
+    CSharpProjectFacts, ComplexityMetrics, CoverageMetrics, FileLocMetrics,
+    LcovData, MainSequenceMetrics, StructMetrics, StructuralMetrics,
     compute_with_hub_thresholds as compute_structural,
 };
 
@@ -31,6 +32,7 @@ pub(crate) struct ComputedMetrics {
     pub(crate) structural: StructuralMetrics,
     pub(crate) complexity: ComplexityMetrics,
     pub(crate) struct_metrics: StructMetrics,
+    pub(crate) main_sequence: MainSequenceMetrics,
     pub(crate) file_loc: FileLocMetrics,
     pub(crate) duplication: mdlr_cpd::DuplicationMetrics,
     pub(crate) coverage: Option<CoverageMetrics>,
@@ -155,6 +157,7 @@ fn compute_all_metrics(
     progress: &CheckProgress,
     cov_files: &[PathBuf],
     repo_root: &Path,
+    project_facts: Option<&CSharpProjectFacts>,
 ) -> ComputedMetrics {
     let unit_count = units.len() as u64;
     let bar = progress.start_bar("Building graph", unit_count);
@@ -163,7 +166,7 @@ fn compute_all_metrics(
     bar.finish();
 
     let total = graph.units.len() as u64;
-    let bar = progress.start_bar("Computing metrics", total * 4);
+    let bar = progress.start_bar("Computing metrics", total * 5);
     let structural = compute_structural(
         &graph,
         config.hub.min_fan_in,
@@ -179,6 +182,9 @@ fn compute_all_metrics(
     let file_loc = FileLocMetrics::compute_with_progress(&graph, |i| {
         bar.set_position(total * 3 + i as u64)
     });
+    let main_sequence =
+        MainSequenceMetrics::compute_with_project_facts(&graph, project_facts);
+    bar.set_position(total * 5);
     bar.finish();
 
     // CPD is the expensive pass; skip it entirely when duplication_pct is off.
@@ -221,6 +227,7 @@ fn compute_all_metrics(
         structural,
         complexity,
         struct_metrics,
+        main_sequence,
         file_loc,
         duplication,
         coverage,
@@ -297,6 +304,8 @@ fn extract_and_analyze(
     let spinner = progress.start_spinner("Loading cache");
     let (entries, units, all_tokens, scope) =
         load_filtered_units(&ctx.store, filter, folder, ctx.generation_id)?;
+    let project_facts =
+        load_csharp_project_facts(&ctx.store, ctx.generation_id)?;
     spinner.finish();
 
     if let CheckFilter::Symbol(symbol_id) = filter {
@@ -316,6 +325,7 @@ fn extract_and_analyze(
         progress,
         cov_files,
         ctx.store.root(),
+        project_facts.as_ref(),
     );
     if let Some(scope) = &scope {
         display_scope::apply(&mut computed, scope);
