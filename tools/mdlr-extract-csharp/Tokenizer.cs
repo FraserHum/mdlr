@@ -36,7 +36,8 @@ public static class Tokenizer
             if (!ignoring && token.Span.Length > 0)
             {
                 var pos = text.Lines.GetLinePosition(token.SpanStart);
-                tokens.Add(new CpdToken(Normalize(token), (uint)(pos.Line + 1), (ushort)pos.Character));
+                var col = (ushort)Math.Min(pos.Character, ushort.MaxValue);
+                tokens.Add(new CpdToken(Normalize(token), (uint)(pos.Line + 1), col));
             }
 
             foreach (var trivia in token.TrailingTrivia)
@@ -62,7 +63,9 @@ public static class Tokenizer
     {
         var kind = token.Kind();
         if (kind == SyntaxKind.IdentifierToken)
-            return NormalizedId;
+            return SyntaxFacts.GetContextualKeywordKind(token.Text) == SyntaxKind.None
+                ? NormalizedId
+                : token.Text;
         switch (kind)
         {
             case SyntaxKind.NumericLiteralToken:

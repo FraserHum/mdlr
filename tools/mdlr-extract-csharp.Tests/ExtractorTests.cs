@@ -479,6 +479,24 @@ public sealed class SemanticTests : IClassFixture<SemanticFixture>
     }
 
     [Fact]
+    public void GeneratedFileSuffixesAreMatchedCaseInsensitively()
+    {
+        var root = Fixture.WriteProject(new()
+        {
+            ["Lib.csproj"] = Fixture.LibCsproj,
+            ["Real.cs"] = "namespace N; public class Real { public void Keep() { } }",
+            ["Lower.designer.cs"] = "namespace N; public class LowerDesigner { public void Drop() { } }",
+            ["Upper.G.cs"] = "namespace N; public class UpperGenerated { public void Drop() { } }",
+        });
+
+        var results = Fixture.Run(root);
+
+        Assert.Contains("Real.cs", results.Keys);
+        Assert.DoesNotContain("Lower.designer.cs", results.Keys);
+        Assert.DoesNotContain("Upper.G.cs", results.Keys);
+    }
+
+    [Fact]
     public void SpansAreOneBasedAndOrdered()
     {
         foreach (var u in _r.Values.SelectMany(e => e.Units))
@@ -510,6 +528,39 @@ public sealed class SemanticTests : IClassFixture<SemanticFixture>
         Assert.DoesNotContain(tokens, t => t.value.StartsWith("//"));
     }
 
+    [Fact]
+    public async Task TokenizerKeepsContextualKeywords()
+    {
+        var root = Fixture.WriteProject(new()
+        {
+            ["Lib.csproj"] = Fixture.LibCsproj,
+            ["A.cs"] = "namespace N; public class A { object F() { var value = 42; return value; } }",
+        });
+        var outDir = Directory.CreateTempSubdirectory("mdlr-cs-tok").FullName;
+        Assert.Equal(0, await Program.Run(root, outDir, 42));
+
+        var (_, _, tokens) = ParseTokens(File.ReadAllBytes(Path.Combine(outDir, "A.cs.tokens")));
+
+        Assert.Contains("var", tokens.Select(t => t.value));
+        Assert.Contains("$ID", tokens.Select(t => t.value));
+    }
+
+    [Fact]
+    public async Task TokenizerClampsWideColumns()
+    {
+        var root = Fixture.WriteProject(new()
+        {
+            ["Lib.csproj"] = Fixture.LibCsproj,
+            ["A.cs"] = new string(' ', 70_000) + "namespace N; public class A { }",
+        });
+        var outDir = Directory.CreateTempSubdirectory("mdlr-cs-tok").FullName;
+        Assert.Equal(0, await Program.Run(root, outDir, 42));
+
+        var (_, _, tokens) = ParseTokens(File.ReadAllBytes(Path.Combine(outDir, "A.cs.tokens")));
+
+        Assert.Contains(tokens, t => t.col == ushort.MaxValue);
+    }
+
     static (string path, ulong cachedAt, List<(string value, uint line, ushort col)> tokens) ParseTokens(byte[] data)
     {
         using var r = new BinaryReader(new MemoryStream(data));
@@ -529,6 +580,62 @@ public sealed class SemanticTests : IClassFixture<SemanticFixture>
 
 public sealed class FallbackAndSolutionTests
 {
+    [Fact]
+    public void RefAndOutFieldArgumentsAreWrites()
+    {
+        var root = Fixture.WriteProject(new()
+        {
+            ["Lib.csproj"] = Fixture.LibCsproj,
+            ["Box.cs"] = """
+                namespace N;
+                public class Box
+                {
+                    private int _value;
+                    public void Mutate()
+                    {
+                        Update(ref this._value, out _value);
+                    }
+                    static void Update(ref int current, out int next)
+                    {
+                        next = current + 1;
+                    }
+                }
+                """,
+        });
+        var results = Fixture.Run(root);
+
+        var mutate = results["Box.cs"].Units.Single(u => u.Id.EndsWith("::Mutate()", StringComparison.Ordinal));
+
+        Assert.Contains("self._value", mutate.Writes);
+        Assert.DoesNotContain("self._value", mutate.Reads);
+    }
+
+    [Fact]
+    public void SyntaxFallbackOperatorIdsUseMetadataNames()
+    {
+        var root = Fixture.WriteProject(new()
+        {
+            ["Vector.cs"] = """
+                namespace N;
+                public readonly struct Vector
+                {
+                    public static Vector operator +(Vector left, Vector right) => left;
+                    public static bool operator ==(Vector left, Vector right) => true;
+                    public static bool operator !=(Vector left, Vector right) => false;
+                    public override bool Equals(object? obj) => obj is Vector;
+                    public override int GetHashCode() => 0;
+                }
+                """,
+        });
+        var results = Fixture.Run(root, expectedExit: 2);
+        var ids = results["Vector.cs"].Units.Select(u => u.Id).ToList();
+
+        Assert.Contains("Vector.cs::N.Vector::op_Addition(Vector,Vector)", ids);
+        Assert.Contains("Vector.cs::N.Vector::op_Equality(Vector,Vector)", ids);
+        Assert.Contains("Vector.cs::N.Vector::op_Inequality(Vector,Vector)", ids);
+        Assert.DoesNotContain(ids, id => id.Contains("op_+", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void NoProjectFallsBackToSyntaxOnlyWithPartialUnits()
     {
@@ -698,5 +805,20 @@ public sealed class FallbackAndSolutionTests
 
         var go = results["game/addons/genode/Linked.cs"].Units.Single(u => u.Id.EndsWith("::Go()", StringComparison.Ordinal));
         Assert.Contains("game/addons/genode/Linked.cs::N.Linked::Stop()", go.Calls);
+    }
+
+    [Fact]
+    public void SymlinkedDirectoryCyclesAreSkipped()
+    {
+        var root = Fixture.WriteProject(new()
+        {
+            ["Loose.cs"] = "namespace N; public class Loose { public void Go() { } }",
+        });
+        Directory.CreateSymbolicLink(Path.Combine(root, "loop"), root);
+
+        var results = Fixture.Run(root, expectedExit: 2);
+
+        Assert.Contains("Loose.cs", results.Keys);
+        Assert.DoesNotContain(results.Keys, key => key.Contains("loop/", StringComparison.Ordinal));
     }
 }

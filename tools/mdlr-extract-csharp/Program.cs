@@ -524,8 +524,10 @@ public static class Program
     {
         var path = root.SyntaxTree.FilePath;
         var name = Path.GetFileName(path);
-        if (name.EndsWith(".g.cs") || name.EndsWith(".g.i.cs")
-            || name.EndsWith(".generated.cs") || name.EndsWith(".Designer.cs"))
+        if (name.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".g.i.cs", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".generated.cs", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".Designer.cs", StringComparison.OrdinalIgnoreCase))
             return true;
 
         var firstToken = root.GetFirstToken(includeZeroWidth: true);
@@ -572,6 +574,8 @@ public static class Program
                 {
                     if (name.StartsWith('.') || SkipDirs.Contains(name, StringComparer.OrdinalIgnoreCase))
                         continue;
+                    if (File.GetAttributes(entry).HasFlag(FileAttributes.ReparsePoint))
+                        continue;
                     stack.Push(entry);
                 }
                 else if (entry.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
@@ -599,7 +603,7 @@ public static class Program
 
             var relative = Path.GetRelativePath(root, fullPath);
             var segments = relative.Split(
-                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
                 StringSplitOptions.RemoveEmptyEntries);
             var current = root;
             for (var i = 0; i < segments.Length; i++)

@@ -365,7 +365,7 @@ public sealed class UnitExtractor
             var entry = "self." + symbol.Name;
             var accessNode = name.Parent is MemberAccessExpressionSyntax ma && ma.Name == name
                 ? (ExpressionSyntax)ma : name;
-            if (IsWriteContext(accessNode))
+            if (IsWriteContext(accessNode) || IsRefOrOutArgument(accessNode))
             {
                 if (writeSet.Add(entry)) writes.Add(entry);
             }
@@ -403,6 +403,15 @@ public sealed class UnitExtractor
                 post.IsKind(SyntaxKind.PostDecrementExpression) => true,
             _ => false,
         };
+    }
+
+    static bool IsRefOrOutArgument(ExpressionSyntax node)
+    {
+        var inner = node;
+        while (inner.Parent is ParenthesizedExpressionSyntax p) inner = p;
+        return inner.Parent is ArgumentSyntax arg
+            && (arg.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword)
+                || arg.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword));
     }
 
     // ---------- display helpers ----------
@@ -502,12 +511,43 @@ public sealed class UnitExtractor
         ConstructorDeclarationSyntax c =>
             (c.Modifiers.Any(SyntaxKind.StaticKeyword) ? ".cctor" : ".ctor") + SyntaxParams(c.ParameterList),
         DestructorDeclarationSyntax => "Finalize()",
-        OperatorDeclarationSyntax op => "op_" + op.OperatorToken.Text + SyntaxParams(op.ParameterList),
+        OperatorDeclarationSyntax op => SyntaxOperatorName(op) + SyntaxParams(op.ParameterList),
         ConversionOperatorDeclarationSyntax conv =>
             (conv.ImplicitOrExplicitKeyword.IsKind(SyntaxKind.ImplicitKeyword) ? "op_Implicit" : "op_Explicit")
             + SyntaxParams(conv.ParameterList),
         _ => decl.ToString(),
     };
+
+    static string SyntaxOperatorName(OperatorDeclarationSyntax op)
+    {
+        var isUnary = op.ParameterList.Parameters.Count == 1;
+        return op.OperatorToken.Kind() switch
+        {
+            SyntaxKind.PlusToken => isUnary ? "op_UnaryPlus" : "op_Addition",
+            SyntaxKind.MinusToken => isUnary ? "op_UnaryNegation" : "op_Subtraction",
+            SyntaxKind.ExclamationToken => "op_LogicalNot",
+            SyntaxKind.TildeToken => "op_OnesComplement",
+            SyntaxKind.PlusPlusToken => "op_Increment",
+            SyntaxKind.MinusMinusToken => "op_Decrement",
+            SyntaxKind.AsteriskToken => "op_Multiply",
+            SyntaxKind.SlashToken => "op_Division",
+            SyntaxKind.PercentToken => "op_Modulus",
+            SyntaxKind.AmpersandToken => "op_BitwiseAnd",
+            SyntaxKind.BarToken => "op_BitwiseOr",
+            SyntaxKind.CaretToken => "op_ExclusiveOr",
+            SyntaxKind.LessThanLessThanToken => "op_LeftShift",
+            SyntaxKind.GreaterThanGreaterThanToken => "op_RightShift",
+            SyntaxKind.EqualsEqualsToken => "op_Equality",
+            SyntaxKind.ExclamationEqualsToken => "op_Inequality",
+            SyntaxKind.GreaterThanToken => "op_GreaterThan",
+            SyntaxKind.LessThanToken => "op_LessThan",
+            SyntaxKind.GreaterThanEqualsToken => "op_GreaterThanOrEqual",
+            SyntaxKind.LessThanEqualsToken => "op_LessThanOrEqual",
+            SyntaxKind.TrueKeyword => "op_True",
+            SyntaxKind.FalseKeyword => "op_False",
+            _ => "op_" + op.OperatorToken.Text,
+        };
+    }
 
     static string SyntaxAccessorDisplay(BasePropertyDeclarationSyntax prop, AccessorDeclarationSyntax? accessor)
     {

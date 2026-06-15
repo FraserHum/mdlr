@@ -5,7 +5,7 @@ tests that are tautological or mock out the actual functionality that needs to b
 
 `mdlr` scans the codebase and hands coding agents a ranked list of the worst offenders — concrete, named symbols with a metric and a severity bucket — so it knows exactly what to clean up next. The loop is: make a batch of edits, run `mdlr check`, fix the top of the list, run it again, and repeat until satisfactory.
 
-Supports Rust, Python, TypeScript, Go, and C# and uses standard meatures of software "quality" alongside code coverage.
+Supports Rust, Python, TypeScript, Go, and C# and uses standard measures of software "quality" alongside code coverage.
 
 C# extraction is performed by the `mdlr-extract-csharp` sibling launcher (built with Roslyn). It loads `.sln`/`.slnx`/`.csproj` projects for full semantic analysis (call/read/write edges) and requires a .NET 8+ SDK so MSBuild can be discovered; when a project can't be loaded it falls back to syntax-only extraction and marks affected units as partial.
 
