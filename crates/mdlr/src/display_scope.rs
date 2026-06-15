@@ -10,6 +10,7 @@
 use std::collections::HashSet;
 
 use crate::check::ComputedMetrics;
+use mdlr_metrics::main_sequence::{is_csharp_unit, module_for};
 use mdlr_metrics::{SortDirection, p90_boundary};
 
 /// The set of Units and files one diff-mode `check` run reports on.
@@ -28,6 +29,13 @@ pub(crate) struct DisplayScope {
 /// `clone_count`) are left project-wide.
 pub(crate) fn apply(computed: &mut ComputedMetrics, scope: &DisplayScope) {
     let units = &scope.unit_ids;
+    let csharp_modules: HashSet<String> = computed
+        .graph
+        .units
+        .iter()
+        .filter(|unit| units.contains(&unit.id) && is_csharp_unit(unit))
+        .map(module_for)
+        .collect();
 
     let s = &mut computed.structural;
     retain(&mut s.fan_in.distribution, units);
@@ -52,6 +60,8 @@ pub(crate) fn apply(computed: &mut ComputedMetrics, scope: &DisplayScope) {
     st.methods_per_struct.p90 = p90(&st.methods_per_struct.distribution);
     retain(&mut st.lcom.distribution, units);
     (st.lcom.max, st.lcom.mean) = max_mean(&st.lcom.distribution);
+
+    computed.main_sequence.retain_modules(&csharp_modules);
 
     let fl = &mut computed.file_loc;
     retain(&mut fl.distribution, &scope.files);

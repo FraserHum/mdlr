@@ -1,7 +1,10 @@
 bin
+obj
 dist
 scratch
 target
 .mdlr
 references
 test-repos
+/mdlr-extract-csharp
+/libexec/

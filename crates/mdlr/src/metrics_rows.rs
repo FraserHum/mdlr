@@ -5,9 +5,9 @@ use crate::config::{Bucket, Config, MetricThresholds, TwoSidedThresholds};
 use mdlr_cpd::DuplicationMetrics;
 use mdlr_metrics::{
     ComplexityMetrics, CoverageMetrics, FileLocMetrics, HubInfo,
-    SortDirection, StructMetrics, StructuralMetrics,
+    MainSequenceMetrics, SortDirection, StructMetrics, StructuralMetrics,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A metric row: (metric_name, symbol, value, bucket)
 pub type MetricRow = (String, String, String, String);
@@ -43,6 +43,7 @@ pub struct MetricsBundle<'a> {
     pub structural: &'a StructuralMetrics,
     pub complexity: &'a ComplexityMetrics,
     pub struct_metrics: &'a StructMetrics,
+    pub main_sequence: &'a MainSequenceMetrics,
     pub file_loc: &'a FileLocMetrics,
     pub duplication: &'a DuplicationMetrics,
     /// Present iff the user passed `--cov`.
@@ -200,6 +201,45 @@ impl HubFilteredFanInSpec<'_> {
     }
 }
 
+/// Module-level C# refactor target score. Text rows suppress modules with no
+/// cross-module dependencies, because those are not useful refactor prompts by
+/// themselves. JSON still exposes every module.
+pub(crate) struct MainSequenceSpec<'a> {
+    pub(crate) distribution: &'a [(String, usize)],
+    thresholds: MetricThresholds,
+    actionable_modules: HashSet<&'a str>,
+}
+
+impl<'a> MainSequenceSpec<'a> {
+    fn new(m: &'a MetricsBundle, thresholds: MetricThresholds) -> Self {
+        let actionable_modules = m
+            .main_sequence
+            .modules
+            .iter()
+            .filter(|module| module.ca + module.ce > 0)
+            .map(|module| module.id.as_str())
+            .collect();
+        Self {
+            distribution: &m.main_sequence.priority_score.distribution,
+            thresholds,
+            actionable_modules,
+        }
+    }
+
+    pub(crate) fn bucket_for(&self, value: usize) -> Bucket {
+        self.thresholds.evaluate(value as f64)
+    }
+
+    fn score(&self, module: &str, value: usize) -> Option<ScoredRow> {
+        self.actionable_modules.contains(module).then(|| ScoredRow {
+            metric_name: "refactor_priority_score".to_string(),
+            symbol: module.to_string(),
+            value: value.to_string(),
+            bucket: self.bucket_for(value),
+        })
+    }
+}
+
 /// The line_cov / uncov_branches specs, present only when `--cov` was
 /// passed. Skip 100% covered: boring 100 with Asc keeps everything below
 /// 100% in, so a unit at exactly 100% drops out.
@@ -231,6 +271,7 @@ fn coverage_specs<'a>(
 /// rows and the symbol JSON view.
 pub(crate) struct MetricSpecs<'a> {
     pub(crate) int_specs: Vec<IntMetricSpec<'a>>,
+    pub(crate) main_sequence_spec: Option<MainSequenceSpec<'a>>,
     pub(crate) function_size_spec: Option<TwoSidedSizeSpec<'a>>,
     pub(crate) fan_in_spec: Option<HubFilteredFanInSpec<'a>>,
 }
@@ -272,6 +313,11 @@ impl<'a> MetricSpecs<'a> {
         // Disabling is output-control: drop specs so no view shows them.
         int_specs.retain(|spec| !config.is_disabled(spec.name));
 
+        let main_sequence_spec =
+            (!config.is_disabled("refactor_priority_score")).then(|| {
+                MainSequenceSpec::new(m, th["main_sequence_distance"].clone())
+            });
+
         let function_size_spec =
             (!config.is_disabled("function_size")).then(|| {
                 TwoSidedSizeSpec::new(m, &config.thresholds.function_size)
@@ -283,7 +329,12 @@ impl<'a> MetricSpecs<'a> {
                 hubs: &m.structural.hubs,
             });
 
-        MetricSpecs { int_specs, function_size_spec, fan_in_spec }
+        MetricSpecs {
+            int_specs,
+            main_sequence_spec,
+            function_size_spec,
+            fan_in_spec,
+        }
     }
 
     /// Collect rows from every spec. `filter` restricts to one symbol
@@ -291,6 +342,11 @@ impl<'a> MetricSpecs<'a> {
     fn collect(&self, filter: Option<&str>) -> Vec<ScoredRow> {
         let mut rows = Vec::new();
         for spec in &self.int_specs {
+            collect_rows(spec.distribution, filter, &mut rows, |s, v| {
+                spec.score(s, v)
+            });
+        }
+        if let Some(spec) = &self.main_sequence_spec {
             collect_rows(spec.distribution, filter, &mut rows, |s, v| {
                 spec.score(s, v)
             });
@@ -313,6 +369,7 @@ impl<'a> MetricSpecs<'a> {
 const METRIC_ORDER: &[&str] = &[
     "fan_out",
     "fan_in",
+    "refactor_priority_score",
     "function_size",
     "params",
     "cyclomatic",

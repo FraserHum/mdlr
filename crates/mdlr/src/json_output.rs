@@ -2,7 +2,7 @@
 
 use mdlr_metrics::{
     BucketedFanMetrics, BucketedValue, ComplexityMetrics, CoverageMetrics,
-    FileLocMetrics, StructMetrics,
+    FileLocMetrics, MainSequenceMetrics, StructMetrics,
 };
 
 /// Build JSON for a bucketed metric value
@@ -62,6 +62,12 @@ pub fn build_complexity_json(
             "mean": complexity.cyclomatic.mean,
             "p90": complexity.cyclomatic.p90,
             "distribution": distribution_json(&complexity.cyclomatic.distribution, "complexity"),
+        },
+        "cognitive": {
+            "max": complexity.cognitive.max,
+            "mean": complexity.cognitive.mean,
+            "p90": complexity.cognitive.p90,
+            "distribution": distribution_json(&complexity.cognitive.distribution, "complexity"),
         },
         "max_scope": {
             "max": complexity.max_scope.max,
@@ -141,4 +147,138 @@ pub fn build_file_loc_json(file_loc: &FileLocMetrics) -> serde_json::Value {
         "total": file_loc.total,
         "distribution": distribution,
     })
+}
+
+/// Build JSON for C# main sequence distance by directory module.
+pub fn build_main_sequence_json(
+    main_sequence: &MainSequenceMetrics,
+    include_refactor_pressure: bool,
+    include_refactor_target: bool,
+    include_refactor_priority: bool,
+) -> serde_json::Value {
+    let distance_distribution: Vec<_> = main_sequence
+        .distance
+        .distribution
+        .iter()
+        .map(|(module, value)| {
+            serde_json::json!({
+                "module": module,
+                "main_sequence_distance": value,
+            })
+        })
+        .collect();
+
+    let refactor_pressure_distribution: Vec<_> = main_sequence
+        .refactor_pressure
+        .distribution
+        .iter()
+        .map(|(module, value)| {
+            serde_json::json!({
+                "module": module,
+                "main_sequence_refactor_pressure": value,
+            })
+        })
+        .collect();
+
+    let refactor_target_distribution: Vec<_> = main_sequence
+        .target_score
+        .distribution
+        .iter()
+        .map(|(module, value)| {
+            serde_json::json!({
+                "module": module,
+                "refactor_target_score": value,
+            })
+        })
+        .collect();
+    let refactor_priority_distribution: Vec<_> = main_sequence
+        .priority_score
+        .distribution
+        .iter()
+        .map(|(module, value)| {
+            serde_json::json!({
+                "module": module,
+                "refactor_priority_score": value,
+            })
+        })
+        .collect();
+
+    let modules: Vec<_> = main_sequence
+        .modules
+        .iter()
+        .map(|module| {
+            let mut detail = serde_json::json!({
+                "module": module.id,
+                "abstractness": module.abstractness,
+                "instability": module.instability,
+                "distance": module.distance,
+                "ca": module.ca,
+                "ce": module.ce,
+                "type_count": module.type_count,
+                "abstract_type_count": module.abstract_type_count,
+                "zone": module.zone,
+                "project_paths": module.project_paths,
+                "explicit_test_project": module.explicit_test_project,
+                "reachable_from_executable": module.reachable_from_executable,
+            });
+            if include_refactor_pressure {
+                detail["architecture_priority"] =
+                    serde_json::json!(module.architecture_priority);
+                detail["implementation_complexity"] =
+                    serde_json::json!(module.implementation_complexity);
+                detail["refactor_pressure"] =
+                    serde_json::json!(module.refactor_pressure);
+            }
+            if include_refactor_target {
+                detail["refactor_payoff"] =
+                    serde_json::json!(module.refactor_payoff);
+                detail["refactor_effort"] =
+                    serde_json::json!(module.refactor_effort);
+                detail["refactor_target_score"] =
+                    serde_json::json!(module.refactor_target_score);
+            }
+            if include_refactor_priority {
+                detail["project_context_weight"] =
+                    serde_json::json!(module.project_context_weight);
+                detail["refactor_priority_score"] =
+                    serde_json::json!(module.refactor_priority_score);
+            }
+            detail
+        })
+        .collect();
+
+    let mut output = serde_json::json!({
+        "distance": {
+            "max": main_sequence.distance.max,
+            "mean": main_sequence.distance.mean,
+            "p90": main_sequence.distance.p90,
+            "distribution": distance_distribution,
+        },
+        "modules": modules,
+    });
+    if include_refactor_pressure {
+        output["refactor_pressure"] = serde_json::json!({
+            "max": main_sequence.refactor_pressure.max,
+            "mean": main_sequence.refactor_pressure.mean,
+            "p90": main_sequence.refactor_pressure.p90,
+            "distribution": refactor_pressure_distribution,
+        });
+    }
+    if include_refactor_target {
+        output["refactor_target_score"] = serde_json::json!({
+            "max": main_sequence.target_score.max,
+            "mean": main_sequence.target_score.mean,
+            "p90": main_sequence.target_score.p90,
+            "distribution": refactor_target_distribution,
+        });
+    }
+    if include_refactor_priority {
+        output["refactor_priority_score"] = serde_json::json!({
+            "max": main_sequence.priority_score.max,
+            "mean": main_sequence.priority_score.mean,
+            "p90": main_sequence.priority_score.p90,
+            "distribution": refactor_priority_distribution,
+        });
+    }
+    output
 }

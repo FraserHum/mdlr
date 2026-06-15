@@ -22,6 +22,12 @@ tasks:
     cmds:
       - go build -o ../../bin/mdlr-extract-go .
 
+  build-csharp:
+    cmds:
+      # No single-file publish: MSBuildWorkspace's BuildHost discovery relies
+      # on Assembly.Location, which is empty in single-file bundles.
+      - ./scripts/build-csharp-extractor.sh --bin-dir bin --libexec-dir bin/libexec/mdlr-extract-csharp --relative-libexec libexec/mdlr-extract-csharp
+
   link:
     vars:
       QUIET: '{{.QUIET | default "false"}}'
@@ -30,6 +36,7 @@ tasks:
         vars:
           QUIET: "{{.QUIET}}"
       - task: build-go
+      - task: build-csharp
     dir: bin
     cmds:
       - ln -sf ../target/debug/mdlr .
@@ -46,6 +53,7 @@ tasks:
     cmds:
       - cargo install --path crates/mdlr --root $HOME/.local
       - cd tools/mdlr-extract-go && go build -o $HOME/.local/bin/mdlr-extract-go .
+      - ./scripts/build-csharp-extractor.sh --bin-dir $HOME/.local/bin --libexec-dir $HOME/.local/lib/mdlr-extract-csharp --relative-libexec ../lib/mdlr-extract-csharp
 
   release:
     desc: Cut a release with GoReleaser (publishes the GitHub Release + pushes the cask).

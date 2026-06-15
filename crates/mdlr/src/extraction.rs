@@ -4,6 +4,9 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 
 use crate::cache::{CacheStore, FileCacheEntry};
+use mdlr_metrics::CSharpProjectFacts;
+
+pub const CSHARP_PROJECT_FACTS_FILE: &str = "csharp-projects.json";
 
 /// A language mdlr can extract Units from, identified by the file extensions
 /// it owns. One `const` per language (see [`LANGUAGES`]).
@@ -16,11 +19,13 @@ const TYPESCRIPT: Language =
     Language { extensions: &["ts", "tsx", "js", "jsx"] };
 const GO: Language = Language { extensions: &["go"] };
 const PYTHON: Language = Language { extensions: &["py", "pyi"] };
+const CSHARP: Language = Language { extensions: &["cs"] };
 
 /// The single source of truth for which file extensions mdlr can extract.
-/// Go is listed here too even though it's a subprocess binary (not a linked
-/// crate), so the registry stays uniform across languages.
-pub const LANGUAGES: &[&Language] = &[&RUST, &TYPESCRIPT, &GO, &PYTHON];
+/// Go and C# are listed here too even though they are subprocess binaries
+/// (not linked crates), so the registry stays uniform across languages.
+pub const LANGUAGES: &[&Language] =
+    &[&RUST, &TYPESCRIPT, &GO, &PYTHON, &CSHARP];
 
 /// Whether `ext` (without leading dot) belongs to a supported language.
 pub fn is_source_extension(ext: &str) -> bool {
@@ -193,6 +198,119 @@ pub fn extract_go(store: &CacheStore, generation_id: u64) -> Result<bool> {
     Ok(status.success())
 }
 
+/// Detect whether the project has C# files or project/solution markers.
+pub fn has_csharp_project(root: &Path) -> bool {
+    let walker =
+        ignore::WalkBuilder::new(root).hidden(true).max_depth(Some(3)).build();
+    for entry in walker.flatten() {
+        if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+            if CSHARP.extensions.contains(&ext)
+                || matches!(ext, "sln" | "slnx" | "csproj")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Find the `mdlr-extract-csharp` binary, checking next to our own binary
+/// first.
+fn find_extract_csharp_binary() -> Option<PathBuf> {
+    if let Ok(current_exe) = env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            let sibling = dir.join("mdlr-extract-csharp");
+            if sibling.exists() {
+                return Some(sibling);
+            }
+        }
+    }
+    if let Ok(output) =
+        std::process::Command::new("which").arg("mdlr-extract-csharp").output()
+    {
+        if output.status.success() {
+            let path =
+                String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+    }
+    None
+}
+
+/// Shell out to `mdlr-extract-csharp` to extract units from C# files.
+#[tracing::instrument(name = "extract_csharp", skip_all)]
+pub fn extract_csharp(store: &CacheStore, generation_id: u64) -> Result<bool> {
+    let workspace_root = store.root();
+    if !has_csharp_project(workspace_root) {
+        return Ok(true);
+    }
+
+    let extract_bin = match find_extract_csharp_binary() {
+        Some(bin) => bin,
+        None => {
+            eprintln!(
+                "Warning: C# project detected but mdlr-extract-csharp was not found next to mdlr or on PATH (results may be partial)"
+            );
+            return Ok(false);
+        }
+    };
+
+    let output = std::process::Command::new(&extract_bin)
+        .arg("--root")
+        .arg(workspace_root)
+        .arg("--output")
+        .arg(store.cache_dir())
+        .arg("--generation-id")
+        .arg(generation_id.to_string())
+        .current_dir(workspace_root)
+        .stdout(std::process::Stdio::null())
+        .output()
+        .context("Failed to run mdlr-extract-csharp")?;
+
+    let outcome = interpret_csharp_exit_code(output.status.code());
+    if !matches!(outcome, CSharpExtractionOutcome::Full) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.trim().is_empty() {
+            eprint!("{stderr}");
+            if !stderr.ends_with('\n') {
+                eprintln!();
+            }
+        }
+    }
+
+    match outcome {
+        CSharpExtractionOutcome::Full => Ok(true),
+        CSharpExtractionOutcome::Partial => Ok(false),
+        CSharpExtractionOutcome::Failed => {
+            eprintln!(
+                "Warning: C# extraction failed with status {} (results may be partial)",
+                output.status.code().map_or_else(
+                    || "signal".to_string(),
+                    |code| code.to_string()
+                )
+            );
+            Ok(false)
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CSharpExtractionOutcome {
+    Full,
+    Partial,
+    Failed,
+}
+
+fn interpret_csharp_exit_code(code: Option<i32>) -> CSharpExtractionOutcome {
+    match code {
+        Some(0) => CSharpExtractionOutcome::Full,
+        Some(2) => CSharpExtractionOutcome::Partial,
+        _ => CSharpExtractionOutcome::Failed,
+    }
+}
+
 /// Detect whether the project has Python files.
 pub fn has_python_project(root: &Path) -> bool {
     if root.join("pyproject.toml").exists()
@@ -246,6 +364,24 @@ pub fn load_cache_dir(
     Ok((entries, tokens))
 }
 
+pub fn load_csharp_project_facts(
+    store: &CacheStore,
+    generation_id: u64,
+) -> Result<Option<CSharpProjectFacts>> {
+    let path = store.cache_dir().join(CSHARP_PROJECT_FACTS_FILE);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let facts: CSharpProjectFacts = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse {}", path.display()))?;
+    if facts.cached_at < generation_id {
+        return Ok(None);
+    }
+    Ok(Some(facts))
+}
+
 /// Recursively load FileCacheEntry JSON files from a directory.
 #[tracing::instrument(name = "load_cache", skip_all)]
 pub fn load_entries_from_dir(
@@ -261,6 +397,11 @@ pub fn load_entries_from_dir(
         if path.is_dir() {
             load_entries_from_dir(&path, entries)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            if path.file_name().and_then(|name| name.to_str())
+                == Some(CSHARP_PROJECT_FACTS_FILE)
+            {
+                continue;
+            }
             let content =
                 std::fs::read_to_string(&path).with_context(|| {
                     format!("Failed to read {}", path.display())
@@ -306,4 +447,37 @@ pub fn load_tokens_from_dir(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CSharpExtractionOutcome, interpret_csharp_exit_code};
+
+    #[test]
+    fn csharp_exit_zero_is_full_extraction() {
+        assert_eq!(
+            interpret_csharp_exit_code(Some(0)),
+            CSharpExtractionOutcome::Full
+        );
+    }
+
+    #[test]
+    fn csharp_exit_two_is_partial_extraction() {
+        assert_eq!(
+            interpret_csharp_exit_code(Some(2)),
+            CSharpExtractionOutcome::Partial
+        );
+    }
+
+    #[test]
+    fn other_csharp_exit_codes_are_failures() {
+        assert_eq!(
+            interpret_csharp_exit_code(Some(1)),
+            CSharpExtractionOutcome::Failed
+        );
+        assert_eq!(
+            interpret_csharp_exit_code(None),
+            CSharpExtractionOutcome::Failed
+        );
+    }
 }

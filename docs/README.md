@@ -5,7 +5,9 @@ tests that are tautological or mock out the actual functionality that needs to b
 
 `mdlr` scans the codebase and hands coding agents a ranked list of the worst offenders — concrete, named symbols with a metric and a severity bucket — so it knows exactly what to clean up next. The loop is: make a batch of edits, run `mdlr check`, fix the top of the list, run it again, and repeat until satisfactory.
 
-Supports Rust, Python, TypeScript, and Go and uses standard meatures of software "quality" alongside code coverage.
+Supports Rust, Python, TypeScript, Go, and C# and uses standard measures of software "quality" alongside code coverage.
+
+C# extraction is performed by the `mdlr-extract-csharp` sibling launcher (built with Roslyn). It loads `.sln`/`.slnx`/`.csproj` projects for full semantic analysis (call/read/write edges) and requires a .NET 8+ SDK so MSBuild can be discovered; when a project can't be loaded it falls back to syntax-only extraction and marks affected units as partial.
 
 **Caveat**: This tool makes no claims on its ability to help agents write archictecturally sound code. The goal is to help agents write clean code so that it is easier for humans to read and get up to speed.
 
@@ -26,8 +28,9 @@ brew upgrade --cask mdlr
 ```
 
 Linux users download a tarball from the [latest GitHub Release](https://github.com/thempatel/mdlr/releases/latest)
-(Homebrew casks are macOS-only). Each tarball contains both the `mdlr` binary and
-its `mdlr-extract-go` sibling — keep them together in the same directory.
+(Homebrew casks are macOS-only). Each tarball contains `mdlr`, its
+`mdlr-extract-go` sibling, and the `mdlr-extract-csharp` launcher with
+`libexec/mdlr-extract-csharp/` support files. Keep that layout together.
 
 | OS    | Arch   | libc  | Install                                   |
 | ----- | ------ | ----- | ----------------------------------------- |
@@ -157,6 +160,7 @@ Use the canonical names from `mdlr metrics ls`. See [Configuration](reference/co
 - [DAG Density](metrics/dag-density.md) — how connected the dependency graph is overall
 - [Fan-In](metrics/fan-in.md) — how many units depend on each unit
 - [Fan-Out](metrics/fan-out.md) — how many units each unit depends on
+- [Main Sequence Distance](metrics/main-sequence-distance.md) — C# directory module distance from abstractness/instability balance and weighted refactor-priority ranking
 - [Complexity](metrics/complexity.md) — function size, parameters, cyclomatic complexity, max scope
 - [Cognitive Complexity](metrics/cognitive-complexity.md) — nesting-aware complexity metric
 - [File LOC](metrics/file-loc.md) — lines of code per file
@@ -168,6 +172,7 @@ Use the canonical names from `mdlr metrics ls`. See [Configuration](reference/co
 
 - [CLI Commands](reference/cli.md)
 - [Configuration](reference/config.md)
+- [Languages](reference/languages.md)
 - [Releasing](reference/releasing.md)
 
 ## License

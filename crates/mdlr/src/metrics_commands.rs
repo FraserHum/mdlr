@@ -23,6 +23,22 @@ const METRIC_DESCRIPTIONS: &[(&str, &str)] = &[
         "Number of outgoing dependencies from a unit. High values indicate a unit with many responsibilities that may need refactoring.",
     ),
     (
+        "main_sequence_distance",
+        "C# directory module distance from the main sequence, reported in percentage points as |Abstractness + Instability - 1| * 100. High values indicate modules drifting toward concrete stability (zone of pain) or abstract instability (zone of uselessness).",
+    ),
+    (
+        "main_sequence_refactor_pressure",
+        "C# directory module architecture-pressure diagnostic, reported 0-100. Combines raw main-sequence distance with coupling, module size, cognitive complexity, LOC, and LCOM4 so large actionable modules rank ahead of tiny architectural outliers. Available in JSON; text output uses refactor_priority_score.",
+    ),
+    (
+        "refactor_target_score",
+        "C# directory module unweighted refactor target score, reported 0-100. Combines graph-derived behavior complexity, coordination complexity, existing architecture pressure, and estimated effort without project-context weighting.",
+    ),
+    (
+        "refactor_priority_score",
+        "C# directory module weighted refactor priority score, reported 0-100 and used in text output. Applies conservative project-context weighting from guaranteed C# project facts: explicit test projects are discounted, executable-reachable projects are modestly boosted, and unknown modules stay neutral.",
+    ),
+    (
         "function_size",
         "Function size in lines of code. Two-sided: both extremes are bad. High values suggest functions that are hard to understand and test — consider splitting. Low values (a 1-2 line function) are flagged only when the function has exactly one caller (fan_in == 1): a single-caller pass-through that adds indirection without abstraction — consider inlining it into its caller. Tiny functions with unknown callers (fan_in 0: trait dispatch, pub API, entry points) or multiple callers (shared helpers, accessors) are never flagged; do not inline those.",
     ),
@@ -144,4 +160,69 @@ fn print_metric_detail(name: &str, config: &config::Config) -> Result<()> {
         println!("(no thresholds defined)");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn descriptions_cover_canonical_metric_names() {
+        for name in config::METRIC_NAMES {
+            assert!(
+                METRIC_DESCRIPTIONS
+                    .iter()
+                    .any(|(described, _)| described == name),
+                "missing metric description for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn main_sequence_distance_has_thresholds() {
+        let config = config::Config::default();
+        let thresholds =
+            config.thresholds.get("main_sequence_distance").unwrap();
+
+        assert_eq!(thresholds.excellent, 15.0);
+        assert_eq!(thresholds.good, 30.0);
+        assert_eq!(thresholds.fair, 50.0);
+        assert_eq!(thresholds.poor, 75.0);
+    }
+
+    #[test]
+    fn main_sequence_refactor_pressure_reuses_distance_thresholds() {
+        let config = config::Config::default();
+        let thresholds =
+            config.thresholds.get("main_sequence_refactor_pressure").unwrap();
+
+        assert_eq!(thresholds.excellent, 15.0);
+        assert_eq!(thresholds.good, 30.0);
+        assert_eq!(thresholds.fair, 50.0);
+        assert_eq!(thresholds.poor, 75.0);
+    }
+
+    #[test]
+    fn refactor_target_score_reuses_distance_thresholds() {
+        let config = config::Config::default();
+        let thresholds =
+            config.thresholds.get("refactor_target_score").unwrap();
+
+        assert_eq!(thresholds.excellent, 15.0);
+        assert_eq!(thresholds.good, 30.0);
+        assert_eq!(thresholds.fair, 50.0);
+        assert_eq!(thresholds.poor, 75.0);
+    }
+
+    #[test]
+    fn refactor_priority_score_reuses_distance_thresholds() {
+        let config = config::Config::default();
+        let thresholds =
+            config.thresholds.get("refactor_priority_score").unwrap();
+
+        assert_eq!(thresholds.excellent, 15.0);
+        assert_eq!(thresholds.good, 30.0);
+        assert_eq!(thresholds.fair, 50.0);
+        assert_eq!(thresholds.poor, 75.0);
+    }
 }

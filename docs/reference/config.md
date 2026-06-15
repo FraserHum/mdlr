@@ -54,6 +54,16 @@ thresholds:
     fair: 2.0
     poor: 3.0
 
+  # C# directory module distance from the main sequence, in percentage
+  # points. Higher is worse. main_sequence_refactor_pressure and
+  # refactor_target_score/refactor_priority_score reuse these same 0-100 bucket
+  # thresholds; they have no separate threshold knobs.
+  main_sequence_distance:
+    excellent: 15
+    good: 30
+    fair: 50
+    poor: 75
+
   # Complexity metrics
   # function_size is two-sided: both extremes are bad. The high block is
   # higher-is-worse; the low block is lower-is-worse and only applies to
@@ -164,12 +174,15 @@ disabled_metrics:
   - uncov_branches
 ```
 
-Use the canonical metric names shown by `mdlr metrics ls` — `fan_in`, `fan_out`, `function_size`, `params`, `cyclomatic`, `cognitive`, `max_scope`, `methods_per_struct`, `lcom`, `file_loc`, `duplication_pct`, `dag_density`, `line_cov`, `uncov_branches`. Note these are the *metric* names, not the threshold keys: disable `fan_in`, not `fan_in_max`.
+Use the canonical metric names shown by `mdlr metrics ls` — `fan_in`, `fan_out`, `main_sequence_distance`, `main_sequence_refactor_pressure`, `refactor_target_score`, `refactor_priority_score`, `function_size`, `params`, `cyclomatic`, `cognitive`, `max_scope`, `methods_per_struct`, `lcom`, `file_loc`, `duplication_pct`, `dag_density`, `line_cov`, `uncov_branches`. Note these are the *metric* names, not the threshold keys: disable `fan_in`, not `fan_in_max`.
 
 Behavior:
 
 - **Output-control, not compute-control.** A disabled metric is omitted from output, but most metrics share a bundled computation pass, so disabling one rarely saves work. The exceptions are skipped outright: the copy-paste detection pass is skipped when `duplication_pct` is disabled, and coverage parsing is skipped when both `line_cov` and `uncov_branches` are disabled.
 - **Composite JSON objects** (`complexity`, `struct`, `coverage`) drop only the disabled sub-fields, and are omitted entirely when all their metrics are disabled.
+- `main_sequence_refactor_pressure` removes pressure fields from `metrics.main_sequence`; raw `main_sequence_distance` JSON and priority-score output stay available.
+- `refactor_target_score` removes the raw target distribution plus target, payoff, and effort fields from `metrics.main_sequence`; raw `main_sequence_distance`, pressure JSON, and priority-score output stay available.
+- `refactor_priority_score` suppresses priority text rows and removes priority fields from `metrics.main_sequence`; raw target, distance, and pressure JSON stay available.
 - **Unknown names** are reported as a warning on stderr and ignored — a typo leaves the metric enabled, so check the warning.
 - `mdlr metrics ls` and `mdlr metrics get <name>` annotate disabled metrics with `(disabled)`.
 
@@ -186,6 +199,10 @@ The default thresholds are based on empirical observations of healthy codebases:
 | fan_in_mean | < 0.5 | < 1.0 | < 2.0 | < 3.0 | >= 3.0 |
 | fan_out_max | < 3 | < 5 | < 8 | < 12 | >= 12 |
 | fan_out_mean | < 0.5 | < 1.0 | < 2.0 | < 3.0 | >= 3.0 |
+| main_sequence_distance | < 15 | < 30 | < 50 | < 75 | >= 75 |
+| main_sequence_refactor_pressure | < 15 | < 30 | < 50 | < 75 | >= 75 |
+| refactor_target_score | < 15 | < 30 | < 50 | < 75 | >= 75 |
+| refactor_priority_score | < 15 | < 30 | < 50 | < 75 | >= 75 |
 
 ### Complexity Metrics
 

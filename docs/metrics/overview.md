@@ -11,6 +11,7 @@ mdlr computes structural metrics that help you understand the modularity and cou
 | [DAG Density](dag-density.md) | How connected the dependency graph is relative to a minimal tree |
 | [Fan-In](fan-in.md) | How many units depend on each unit |
 | [Fan-Out](fan-out.md) | How many units each unit depends on |
+| [Main Sequence Distance](main-sequence-distance.md) | C# directory module distance from `A + I = 1`; text output ranks actionable modules by weighted refactor priority score |
 
 ### Complexity Metrics
 
@@ -94,3 +95,4 @@ Watch for:
 - DAG density creeping upward (increasing coupling)
 - New hub units appearing (centralization)
 - Fan-out max increasing (growing god functions)
+- Refactor target scores increasing in C# modules (behavior and coordination complexity plus architecture pressure)

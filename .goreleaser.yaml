@@ -1,8 +1,9 @@
 # GoReleaser config for mdlr. Released from a laptop, no CI — see RELEASING.md.
 #
-# Ships two binaries per platform in one archive: `mdlr` (Rust) and
-# `mdlr-extract-go` (Go). They MUST travel together — at runtime `mdlr` finds
-# `mdlr-extract-go` as a sibling in its own directory (extraction.rs).
+# Ships `mdlr` (Rust), `mdlr-extract-go` (Go), and the C# POSIX launcher plus
+# `libexec/mdlr-extract-csharp` support files. The sibling executables MUST
+# travel together — at runtime `mdlr` finds extractor launchers next to itself
+# (extraction.rs).
 #
 # Distribution:
 #   - macOS  -> Homebrew Cask (thempatel/homebrew-tap)
@@ -15,6 +16,12 @@
 version: 2
 
 project_name: mdlr
+
+before:
+  hooks:
+    # Framework-dependent, non-single-file publish: MSBuildWorkspace's BuildHost
+    # discovery depends on normal assembly locations.
+    - ./scripts/build-csharp-extractor.sh --bin-dir . --libexec-dir libexec/mdlr-extract-csharp --relative-libexec libexec/mdlr-extract-csharp
 
 builds:
   # --- Rust binary, one build id per OS so each pairs into a clean archive ---
@@ -93,15 +100,24 @@ archives:
   - id: macos
     ids: [mdlr-macos, go-macos]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - mdlr-extract-csharp
+      - libexec/mdlr-extract-csharp/**/*
   # Linux glibc: manual / mise / aqua install from the GitHub Release.
   - id: linux
     ids: [mdlr-linux, go-linux]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - mdlr-extract-csharp
+      - libexec/mdlr-extract-csharp/**/*
   # Linux static musl (Alpine/distroless). Suffix avoids colliding with glibc,
   # which shares the same os/arch.
   - id: linux-musl
     ids: [mdlr-musl, go-linux]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}_musl"
+    files:
+      - mdlr-extract-csharp
+      - libexec/mdlr-extract-csharp/**/*
 
 homebrew_casks:
   - name: mdlr
@@ -109,6 +125,7 @@ homebrew_casks:
     binaries:
       - mdlr
       - mdlr-extract-go
+      - mdlr-extract-csharp
     repository:
       owner: thempatel
       name: homebrew-tap
@@ -123,8 +140,7 @@ homebrew_casks:
       post:
         install: |
           if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/mdlr"]
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/mdlr-extract-go"]
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}"]
           end
 
 checksum:
